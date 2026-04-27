@@ -56,12 +56,27 @@ pub fn path_variants(path: &str) -> Vec<String> {
     variants
 }
 
-/// Remove common 64-bit marker substrings from a name.
+/// Remove common 64-bit marker suffixes from a name.
+///
+/// Checks only at the end of the string so names like "base64encoder" are
+/// left intact. Ordered from most-specific to least-specific to avoid
+/// partial overwrites.
 pub fn strip_64_suffix(name: &str) -> String {
-    name.replace(".x64", "")
-        .replace("_64", "")
-        .replace("x64", "")
-        .replace("64", "")
+    // Must be checked before the shorter patterns they contain.
+    for suffix in [".x64", "_64", "x64", "64"] {
+        if let Some(stripped) = name.strip_suffix(suffix) {
+            return stripped.to_string();
+        }
+    }
+    name.to_string()
+}
+
+/// Extract the last path component from a Unix or Windows path.
+pub fn path_filename(path: &str) -> &str {
+    path.split(|c| c == '/' || c == '\\')
+        .filter(|s| !s.is_empty())
+        .next_back()
+        .unwrap_or(path)
 }
 
 // ── Matching ─────────────────────────────────────────────────────────────────
@@ -73,11 +88,7 @@ pub fn match_process<'a>(
     entries: &'a [DetectableEntry],
 ) -> Option<&'a DetectableEntry> {
     let variants = path_variants(path);
-    let filename = path
-        .split(|c| c == '/' || c == '\\')
-        .filter(|s| !s.is_empty())
-        .next_back()
-        .unwrap_or(path);
+    let filename = path_filename(path);
 
     for entry in entries {
         for exe in &entry.executables {

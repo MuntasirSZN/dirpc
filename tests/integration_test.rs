@@ -11,7 +11,9 @@ use std::sync::Arc;
 
 use dirpc::{
     decode, encode,
-    process::detectable::{load_detectable, match_process, path_variants, strip_64_suffix},
+    process::detectable::{
+        load_detectable, match_process, path_filename, path_variants, strip_64_suffix,
+    },
     server::{maybe_to_ms, ServerState, READY_PAYLOAD},
     types::{ActivityEvent, IpcOpcode, RpcMessage},
     validate_origin,
@@ -446,6 +448,15 @@ fn test_strip_64_suffix() {
     assert_eq!(strip_64_suffix("game_64"), "game");
     assert_eq!(strip_64_suffix("game.x64"), "game");
     assert_eq!(strip_64_suffix("game"), "game");
+    // Must NOT strip "64" from the middle of a name.
+    assert_eq!(strip_64_suffix("base64encoder"), "base64encoder");
+}
+
+#[test]
+fn test_path_filename() {
+    assert_eq!(path_filename("/usr/bin/csgo"), "csgo");
+    assert_eq!(path_filename(r"C:\games\overwatch.exe"), "overwatch.exe");
+    assert_eq!(path_filename("csgo"), "csgo");
 }
 
 #[test]
