@@ -41,7 +41,8 @@ async fn read_frame<R: AsyncReadExt + Unpin>(
     let mut header = [0u8; 8];
     reader.read_exact(&mut header).await?;
     let opcode = i32::from_le_bytes(header[0..4].try_into().unwrap());
-    let length = u32::from_le_bytes(header[4..8].try_into().unwrap()) as usize;
+    let length = usize::try_from(u32::from_le_bytes(header[4..8].try_into().unwrap()))
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     let mut body = vec![0u8; length];
     reader.read_exact(&mut body).await?;
     Ok((opcode, body))

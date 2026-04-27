@@ -457,6 +457,9 @@ fn test_path_filename() {
     assert_eq!(path_filename("/usr/bin/csgo"), "csgo");
     assert_eq!(path_filename(r"C:\games\overwatch.exe"), "overwatch.exe");
     assert_eq!(path_filename("csgo"), "csgo");
+    // All-separator paths return empty string.
+    assert_eq!(path_filename("///"), "");
+    assert_eq!(path_filename(""), "");
 }
 
 #[test]

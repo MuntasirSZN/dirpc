@@ -38,7 +38,7 @@ pub fn load_detectable() -> Vec<DetectableEntry> {
 pub fn path_variants(path: &str) -> Vec<String> {
     // Support both Unix `/` and Windows `\` separators.
     let parts: Vec<&str> = path
-        .split(|c| c == '/' || c == '\\')
+        .split(['/', '\\'])
         .filter(|s| !s.is_empty())
         .collect();
     let mut variants: Vec<String> = Vec::new();
@@ -72,11 +72,12 @@ pub fn strip_64_suffix(name: &str) -> String {
 }
 
 /// Extract the last path component from a Unix or Windows path.
+///
+/// Returns an empty string for paths that consist entirely of separators,
+/// and the full path unchanged when no separator is present.
 pub fn path_filename(path: &str) -> &str {
-    path.split(|c| c == '/' || c == '\\')
-        .filter(|s| !s.is_empty())
-        .next_back()
-        .unwrap_or(path)
+    path.split(['/', '\\']).rfind(|s| !s.is_empty())
+        .unwrap_or("")
 }
 
 // ── Matching ─────────────────────────────────────────────────────────────────

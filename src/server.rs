@@ -222,11 +222,14 @@ impl Default for ServerState {
 
 /// Convert a timestamp to milliseconds if it appears to be in seconds.
 ///
-/// Heuristic: if `now_ms.digits - ts.digits > 2` the value is in seconds.
+/// Heuristic: if the current time in milliseconds has more than 2 more digits
+/// than `ts`, treat `ts` as a seconds value and multiply by 1000.
+/// This matches the original arRPC behaviour (`Date.now().length - ts.length > 2`).
 pub fn maybe_to_ms(ts: i64) -> i64 {
+    // SystemTime should always be after UNIX_EPOCH on any supported system.
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
+        .expect("system clock is before UNIX_EPOCH")
         .as_millis() as u64;
 
     let now_len = now_ms.to_string().len();
