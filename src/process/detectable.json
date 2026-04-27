@@ -1,0 +1,23 @@
+[
+  {
+    "executables": [{"is_launcher": false, "name": "overwatch.exe", "os": "win32"}],
+    "id": "356875221078245376",
+    "name": "Overwatch"
+  },
+  {
+    "executables": [
+      {"is_launcher": false, "name": "csgo", "os": "linux"},
+      {"is_launcher": false, "name": "csgo.exe", "os": "win32"}
+    ],
+    "id": "359550717720469504",
+    "name": "Counter-Strike: Global Offensive"
+  },
+  {
+    "executables": [
+      {"is_launcher": false, "name": "cs2", "os": "linux"},
+      {"is_launcher": false, "name": "cs2.exe", "os": "win32"}
+    ],
+    "id": "1073232715901124688",
+    "name": "Counter-Strike 2"
+  }
+]
