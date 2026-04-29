@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
     Arc,
+    atomic::{AtomicU64, Ordering},
 };
 
-use serde_json::{json, Value};
-use tokio::sync::{broadcast, mpsc, RwLock};
+use serde_json::{Value, json};
+use tokio::sync::{broadcast, mpsc};
+use parking_lot::RwLock;
 use tracing::{debug, warn};
 
 use crate::types::{ActivityEvent, RpcMessage};

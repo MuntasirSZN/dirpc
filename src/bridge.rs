@@ -1,30 +1,29 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
+use dashmap::DashMap;
 use futures_util::{SinkExt, StreamExt};
-use serde_json::Value;
-use tokio::net::TcpListener;
-use tokio::sync::{broadcast, Mutex};
-use tokio_tungstenite::accept_async;
-use tokio_tungstenite::tungstenite::Message;
-use tracing::{debug, error, info, warn};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::broadcast;
+use tracing::{debug, info, warn};
+
+use yawc::{WebSocket, Options};
+use yawc::frame::Frame;
 
 use crate::types::ActivityEvent;
 
-/// Per-socket-id last known activity (null = cleared).
-type LastMsgs = Arc<Mutex<HashMap<u64, Value>>>;
+/// socket_id -> serialized JSON
+type LastMsgs = Arc<DashMap<u64, Arc<str>>>;
 
-/// Shared bridge state: last messages + a broadcast channel for live updates.
 pub struct BridgeState {
     pub last_msgs: LastMsgs,
-    pub tx: broadcast::Sender<String>,
+    pub tx: broadcast::Sender<Arc<str>>,
 }
 
 impl BridgeState {
     pub fn new() -> Self {
-        let (tx, _) = broadcast::channel(128);
+        let (tx, _) = broadcast::channel(256);
         Self {
-            last_msgs: Arc::new(Mutex::new(HashMap::new())),
+            last_msgs: Arc::new(DashMap::new()),
             tx,
         }
     }
@@ -36,124 +35,117 @@ impl Default for BridgeState {
     }
 }
 
-/// Start the bridge WebSocket server.
-///
-/// * Listens on `port` (default 1337).
-/// * Subscribes to `activity_rx` and broadcasts updates to all web clients.
-/// * On new client connection, replays the current activity table for catch-up.
 pub async fn start_bridge(
     mut activity_rx: broadcast::Receiver<ActivityEvent>,
     port: u16,
 ) -> std::io::Result<()> {
     let state = Arc::new(BridgeState::new());
 
-    // Drive the activity feed into the bridge state + broadcast channel.
+    // 🔥 Feed activity → state + broadcast
     let state_feed = state.clone();
     tokio::spawn(async move {
         loop {
             match activity_rx.recv().await {
                 Ok(event) => {
                     let key = event.socket_id;
-                    let msg_json = serde_json::to_string(&event.activity).unwrap_or_default();
 
-                    {
-                        let mut map = state_feed.last_msgs.lock().await;
-                        match &event.activity {
-                            None => {
-                                map.remove(&key);
-                            }
-                            Some(v) => {
-                                map.insert(key, v.clone());
-                            }
+                    match &event.activity {
+                        None => {
+                            state_feed.last_msgs.remove(&key);
+                        }
+                        Some(v) => {
+                            let json = match serde_json::to_string(v) {
+                                Ok(s) => Arc::<str>::from(s),
+                                Err(_) => continue,
+                            };
+
+                            state_feed.last_msgs.insert(key, json.clone());
+                            let _ = state_feed.tx.send(json);
                         }
                     }
-
-                    let _ = state_feed.tx.send(msg_json);
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
-                    warn!("Bridge activity channel lagged by {} messages", n);
+                    warn!("Bridge lagged {} messages", n);
                 }
-                Err(broadcast::error::RecvError::Closed) => {
-                    debug!("Bridge activity channel closed");
-                    break;
-                }
+                Err(broadcast::error::RecvError::Closed) => break,
             }
         }
     });
 
     let addr = format!("127.0.0.1:{}", port);
     let listener = TcpListener::bind(&addr).await?;
-    info!("Bridge WebSocket server listening on ws://{}", addr);
+    info!("Bridge listening on ws://{}", addr);
 
     loop {
-        match listener.accept().await {
-            Ok((stream, peer)) => {
-                debug!("Bridge client connected from {}", peer);
-                let state_conn = state.clone();
-                tokio::spawn(async move {
-                    handle_bridge_client(stream, state_conn).await;
-                });
+        let (stream, peer) = listener.accept().await?;
+        debug!("Client connected: {}", peer);
+
+        let state_conn = state.clone();
+
+        tokio::spawn(async move {
+            if let Err(e) = handle_client(stream, state_conn).await {
+                warn!("Client error: {}", e);
             }
-            Err(e) => {
-                error!("Bridge accept error: {}", e);
-            }
-        }
+        });
     }
 }
 
-async fn handle_bridge_client(
-    stream: tokio::net::TcpStream,
+async fn handle_client(
+    stream: TcpStream,
     state: Arc<BridgeState>,
-) {
-    let ws_stream = match accept_async(stream).await {
-        Ok(ws) => ws,
-        Err(e) => {
-            warn!("Bridge WS handshake failed: {}", e);
-            return;
-        }
-    };
+) -> anyhow::Result<()> {
+    // ⚠️ Required by yawc handshake API
+    let url = "ws://localhost/".parse().unwrap();
 
-    let (mut sink, mut source) = ws_stream.split();
+    // Perform handshake over raw TCP stream
+    let ws = WebSocket::handshake(
+        url,
+        stream,
+        Options::default(),
+    ).await?;
 
-    // Subscribe before sending catch-up to avoid missing concurrent updates.
+    // yawc implements Sink + Stream → split works
+    let (mut sink, mut source) = ws.split();
+
     let mut rx = state.tx.subscribe();
 
-    // Send catch-up: all currently-tracked activities.
-    {
-        let map = state.last_msgs.lock().await;
-        for v in map.values() {
-            let payload = serde_json::to_string(v).unwrap_or_default();
-            if sink.send(Message::Text(payload)).await.is_err() {
-                return;
-            }
-        }
+    // 🔹 Catch-up snapshot
+    for entry in state.last_msgs.iter() {
+        let payload = entry.value().clone();
+        sink.send(Frame::text(&*payload)).await?;
     }
 
     loop {
         tokio::select! {
-            // Forward live activity updates to the web client.
-            result = rx.recv() => {
-                match result {
+            // 🔥 Broadcast → client
+            msg = rx.recv() => {
+                match msg {
                     Ok(payload) => {
-                        if sink.send(Message::Text(payload)).await.is_err() {
+                        if sink.send(Frame::text(&*payload)).await.is_err() {
                             break;
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
-                        warn!("Bridge client missed {} activity messages", n);
+                        warn!("Client lagged {} messages", n);
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
-            // Drain incoming frames (we don't use them, but must drive the reader).
-            msg = source.next() => {
-                match msg {
-                    Some(Ok(_)) => {}
-                    _ => break,
+
+            // 🔄 Incoming frames (correct type)
+            incoming = source.next() => {
+                match incoming {
+                    Some(frame) => {
+                        // frame is already a Frame (NOT Result)
+                        // yawc auto-handles ping/pong/close internally
+                        let _ = frame;
+                    }
+                    None => break,
                 }
             }
         }
     }
 
-    debug!("Bridge client disconnected");
+    debug!("Client disconnected");
+    Ok(())
 }

@@ -37,10 +37,7 @@ pub fn load_detectable() -> Vec<DetectableEntry> {
 /// variants of each, to match entries like `csgo`, `game/csgo`, `hl2/game/csgo`, …
 pub fn path_variants(path: &str) -> Vec<String> {
     // Support both Unix `/` and Windows `\` separators.
-    let parts: Vec<&str> = path
-        .split(['/', '\\'])
-        .filter(|s| !s.is_empty())
-        .collect();
+    let parts: Vec<&str> = path.split(['/', '\\']).filter(|s| !s.is_empty()).collect();
     let mut variants: Vec<String> = Vec::new();
 
     let start = if parts.len() > 4 { parts.len() - 4 } else { 0 };
@@ -76,7 +73,8 @@ pub fn strip_64_suffix(name: &str) -> String {
 /// Returns an empty string for paths that consist entirely of separators,
 /// and the full path unchanged when no separator is present.
 pub fn path_filename(path: &str) -> &str {
-    path.split(['/', '\\']).rfind(|s| !s.is_empty())
+    path.split(['/', '\\'])
+        .rfind(|s| !s.is_empty())
         .unwrap_or("")
 }
 
@@ -106,10 +104,7 @@ pub fn match_process<'a>(
 
             // Check required arguments if specified.
             if let Some(required_args) = &exe.arguments {
-                if !required_args
-                    .iter()
-                    .all(|ra| args.iter().any(|a| a == ra))
-                {
+                if !required_args.iter().all(|ra| args.iter().any(|a| a == ra)) {
                     continue;
                 }
             }

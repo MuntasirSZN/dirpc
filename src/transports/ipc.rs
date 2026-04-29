@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{debug, error, info, warn};
 
-use crate::server::{ServerState, READY_PAYLOAD};
+use crate::server::{READY_PAYLOAD, ServerState};
 use crate::types::{Handshake, IpcOpcode};
 
 // ── Wire helpers ────────────────────────────────────────────────────────────
@@ -35,9 +35,7 @@ pub fn decode(data: &[u8]) -> Option<(i32, String)> {
 }
 
 /// Read one IPC frame asynchronously from `reader`.
-async fn read_frame<R: AsyncReadExt + Unpin>(
-    reader: &mut R,
-) -> std::io::Result<(i32, Vec<u8>)> {
+async fn read_frame<R: AsyncReadExt + Unpin>(reader: &mut R) -> std::io::Result<(i32, Vec<u8>)> {
     let mut header = [0u8; 8];
     reader.read_exact(&mut header).await?;
     let opcode = i32::from_le_bytes(header[0..4].try_into().unwrap());
@@ -175,7 +173,10 @@ async fn handle_ipc_connection(stream: tokio::net::UnixStream, state: Arc<Server
 
     let client_id = handshake.client_id.clone();
     let socket_id = state.next_id();
-    debug!("IPC HANDSHAKE: client_id={} socket_id={}", client_id, socket_id);
+    debug!(
+        "IPC HANDSHAKE: client_id={} socket_id={}",
+        client_id, socket_id
+    );
 
     // ── Step 2: send DISPATCH/READY ────────────────────────────────────────
     let ready = encode(IpcOpcode::Frame as i32, READY_PAYLOAD);

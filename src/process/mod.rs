@@ -7,7 +7,7 @@ use serde_json::json;
 use tracing::{debug, info};
 
 use crate::server::ServerState;
-use detectable::{load_detectable, match_process, DetectableEntry};
+use detectable::{DetectableEntry, load_detectable, match_process};
 
 // ── Process list ─────────────────────────────────────────────────────────────
 
@@ -82,7 +82,10 @@ pub async fn start_process_scanner(state: Arc<ServerState>) {
     let entries = load_detectable();
     let mut active: HashMap<u32, String> = HashMap::new(); // pid → game id
 
-    info!("Process scanner started ({} detectable entries)", entries.len());
+    info!(
+        "Process scanner started ({} detectable entries)",
+        entries.len()
+    );
 
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
@@ -124,9 +127,7 @@ pub async fn scan_once(
                     })),
                     ..Default::default()
                 };
-                state
-                    .handle_message(0, &entry.id, &msg)
-                    .await;
+                state.handle_message(0, &entry.id, &msg).await;
             }
         }
     }

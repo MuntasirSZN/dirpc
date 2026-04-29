@@ -1,6 +1,6 @@
 use clap::Parser;
 use tracing::info;
-use tracing_subscriber::{fmt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt};
 
 use dirpc::{
     bridge::start_bridge,
@@ -38,9 +38,7 @@ pub struct Cli {
 async fn main() {
     let cli = Cli::parse();
 
-    fmt()
-        .with_env_filter(EnvFilter::new(&cli.log_level))
-        .init();
+    fmt().with_env_filter(EnvFilter::new(&cli.log_level)).init();
 
     info!("Starting dirpc (bridge port {})", cli.bridge_port);
 

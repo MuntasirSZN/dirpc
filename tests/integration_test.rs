@@ -1,12 +1,3 @@
-/// Integration and unit tests for dirpc.
-///
-/// Coverage targets:
-///   1. IPC message encoding / decoding
-///   2. Server command handling (SET_ACTIVITY, CONNECTIONS_CALLBACK, etc.)
-///   3. WebSocket origin / query-param validation
-///   4. Bridge catch-up and broadcast
-///   5. Process-scanner matching logic
-///   6. CLI parsing
 use std::sync::Arc;
 
 use dirpc::{
@@ -14,15 +5,11 @@ use dirpc::{
     process::detectable::{
         load_detectable, match_process, path_filename, path_variants, strip_64_suffix,
     },
-    server::{maybe_to_ms, ServerState, READY_PAYLOAD},
+    server::{READY_PAYLOAD, ServerState, maybe_to_ms},
     types::{ActivityEvent, IpcOpcode, RpcMessage},
     validate_origin,
 };
-use serde_json::{json, Value};
-
-// ════════════════════════════════════════════════════════════════════════════
-// 1. IPC encode / decode
-// ════════════════════════════════════════════════════════════════════════════
+use serde_json::{Value, json};
 
 #[test]
 fn test_ipc_encode_decode_roundtrip() {
@@ -91,10 +78,6 @@ fn test_ipc_opcode_roundtrip() {
     }
     assert_eq!(IpcOpcode::from_i32(99), None);
 }
-
-// ════════════════════════════════════════════════════════════════════════════
-// 2. Server command handling
-// ════════════════════════════════════════════════════════════════════════════
 
 #[tokio::test]
 async fn test_connections_callback() {
@@ -315,9 +298,7 @@ async fn test_socket_registration_and_unregistration() {
     let (tx, mut client_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     state.register_socket(99, tx).await;
 
-    state
-        .send_to_socket(99, "hello".to_string())
-        .await;
+    state.send_to_socket(99, "hello".to_string()).await;
     assert_eq!(client_rx.recv().await.unwrap(), "hello");
 
     // Unregister emits null activity event.
@@ -340,10 +321,6 @@ async fn test_socket_id_increments() {
     assert!(id1 < id2 && id2 < id3);
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// 2b. READY_PAYLOAD
-// ════════════════════════════════════════════════════════════════════════════
-
 #[test]
 fn test_ready_payload_is_valid_json() {
     let v: Value = serde_json::from_str(READY_PAYLOAD).expect("READY_PAYLOAD must be valid JSON");
@@ -352,10 +329,6 @@ fn test_ready_payload_is_valid_json() {
     assert_eq!(v["data"]["v"], 1);
     assert_eq!(v["data"]["user"]["username"], "arrpc");
 }
-
-// ════════════════════════════════════════════════════════════════════════════
-// 3. WebSocket origin / query-param validation
-// ════════════════════════════════════════════════════════════════════════════
 
 #[test]
 fn test_valid_origins() {
@@ -372,10 +345,6 @@ fn test_invalid_origins() {
     assert!(!validate_origin("https://notdiscord.com"));
     assert!(!validate_origin("https://discord.com.evil.com"));
 }
-
-// ════════════════════════════════════════════════════════════════════════════
-// 4. Bridge: catch-up and broadcast
-// ════════════════════════════════════════════════════════════════════════════
 
 #[tokio::test]
 async fn test_bridge_state_new() {
@@ -416,10 +385,6 @@ async fn test_bridge_last_msgs_updated() {
     assert_eq!(map.len(), 2);
     assert_eq!(map[&1]["application_id"], "abc");
 }
-
-// ════════════════════════════════════════════════════════════════════════════
-// 5. Process-scanner matching logic
-// ════════════════════════════════════════════════════════════════════════════
 
 #[test]
 fn test_path_variants_simple() {
@@ -542,9 +507,7 @@ fn test_match_process_with_required_args() {
     // Without required arg → no match.
     assert!(match_process("/usr/bin/launcher", &[], &entries).is_none());
     // With required arg → match.
-    assert!(
-        match_process("/usr/bin/launcher", &["--game=mygame"], &entries).is_some()
-    );
+    assert!(match_process("/usr/bin/launcher", &["--game=mygame"], &entries).is_some());
 }
 
 #[test]
@@ -552,74 +515,6 @@ fn test_detectable_json_loads() {
     let entries = load_detectable();
     assert!(!entries.is_empty());
 }
-
-// ════════════════════════════════════════════════════════════════════════════
-// 6. CLI parsing
-// ════════════════════════════════════════════════════════════════════════════
-
-#[test]
-fn test_cli_defaults() {
-    use clap::Parser;
-    // Import the Cli struct from the binary; re-use the definition inline for tests.
-    #[derive(Debug, Parser)]
-    struct Cli {
-        #[arg(long, env = "DIRPC_BRIDGE_PORT", default_value = "1337")]
-        bridge_port: u16,
-        #[arg(long, default_value = "false")]
-        no_ipc: bool,
-        #[arg(long, default_value = "false")]
-        no_ws: bool,
-        #[arg(long, default_value = "false")]
-        no_scanner: bool,
-        #[arg(long, env = "RUST_LOG", default_value = "info")]
-        log_level: String,
-    }
-
-    let cli = Cli::parse_from(["dirpc"]);
-    assert_eq!(cli.bridge_port, 1337);
-    assert!(!cli.no_ipc);
-    assert!(!cli.no_ws);
-    assert!(!cli.no_scanner);
-    assert_eq!(cli.log_level, "info");
-}
-
-#[test]
-fn test_cli_custom_bridge_port() {
-    use clap::Parser;
-
-    #[derive(Debug, Parser)]
-    struct Cli {
-        #[arg(long, default_value = "1337")]
-        bridge_port: u16,
-    }
-
-    let cli = Cli::parse_from(["dirpc", "--bridge-port", "9999"]);
-    assert_eq!(cli.bridge_port, 9999);
-}
-
-#[test]
-fn test_cli_flags() {
-    use clap::Parser;
-
-    #[derive(Debug, Parser)]
-    struct Cli {
-        #[arg(long, default_value = "false")]
-        no_ipc: bool,
-        #[arg(long, default_value = "false")]
-        no_ws: bool,
-        #[arg(long, default_value = "false")]
-        no_scanner: bool,
-    }
-
-    let cli = Cli::parse_from(["dirpc", "--no-ipc", "--no-ws", "--no-scanner"]);
-    assert!(cli.no_ipc);
-    assert!(cli.no_ws);
-    assert!(cli.no_scanner);
-}
-
-// ════════════════════════════════════════════════════════════════════════════
-// 7. Timestamp helper
-// ════════════════════════════════════════════════════════════════════════════
 
 #[test]
 fn test_maybe_to_ms_converts_seconds() {
@@ -663,10 +558,6 @@ fn test_set_activity_timestamp_conversion() {
         assert_eq!(act["timestamps"]["start"], ts_s * 1000);
     });
 }
-
-// ════════════════════════════════════════════════════════════════════════════
-// 8. IPC path helper
-// ════════════════════════════════════════════════════════════════════════════
 
 #[test]
 fn test_ipc_path_contains_index() {

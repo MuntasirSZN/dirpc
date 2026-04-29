@@ -1,20 +1,20 @@
 use std::sync::Arc;
 
 use axum::{
+    Router,
     extract::{
-        ws::{Message, WebSocket, WebSocketUpgrade},
         Query, State,
+        ws::{Message, WebSocket, WebSocketUpgrade},
     },
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
-    Router,
 };
 use serde::Deserialize;
 use tokio::net::TcpListener;
 use tracing::{debug, info, warn};
 
-use crate::server::{ServerState, READY_PAYLOAD};
+use crate::server::{READY_PAYLOAD, ServerState};
 use crate::types::RpcMessage;
 
 // ── Origin validation ─────────────────────────────────────────────────────────
@@ -26,9 +26,7 @@ use crate::types::RpcMessage;
 pub fn validate_origin(origin: &str) -> bool {
     matches!(
         origin,
-        "" | "https://discord.com"
-            | "https://ptb.discord.com"
-            | "https://canary.discord.com"
+        "" | "https://discord.com" | "https://ptb.discord.com" | "https://canary.discord.com"
     )
 }
 
@@ -67,9 +65,7 @@ pub async fn start_ws_server(state: Arc<ServerState>) -> std::io::Result<()> {
 
 /// Build the axum `Router` (useful for tests that want to control the listener).
 pub fn make_router(state: Arc<ServerState>) -> Router {
-    Router::new()
-        .route("/", get(ws_handler))
-        .with_state(state)
+    Router::new().route("/", get(ws_handler)).with_state(state)
 }
 
 // ── Handler ───────────────────────────────────────────────────────────────────
@@ -106,7 +102,10 @@ async fn ws_handler(
 
 async fn handle_ws_socket(mut socket: WebSocket, state: Arc<ServerState>, client_id: String) {
     let socket_id = state.next_id();
-    debug!("WS connected: client_id={} socket_id={}", client_id, socket_id);
+    debug!(
+        "WS connected: client_id={} socket_id={}",
+        client_id, socket_id
+    );
 
     // Send DISPATCH/READY.
     if socket
