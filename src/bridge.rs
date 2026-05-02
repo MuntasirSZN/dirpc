@@ -1,13 +1,14 @@
 use std::sync::Arc;
 
+use bytes::BytesMut;
 use dashmap::DashMap;
-use futures_util::{SinkExt, StreamExt};
+use sockudo_ws::handshake::{build_response, generate_accept_key, parse_request};
+use sockudo_ws::protocol::Message;
+use sockudo_ws::{Config, WebSocketStream};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
-
-use yawc::{WebSocket, Options};
-use yawc::frame::Frame;
 
 use crate::types::ActivityEvent;
 
@@ -41,7 +42,7 @@ pub async fn start_bridge(
 ) -> std::io::Result<()> {
     let state = Arc::new(BridgeState::new());
 
-    // 🔥 Feed activity → state + broadcast
+    // Feed activity → state + broadcast
     let state_feed = state.clone();
     tokio::spawn(async move {
         loop {
@@ -90,38 +91,50 @@ pub async fn start_bridge(
     }
 }
 
+async fn do_handshake(mut stream: TcpStream) -> anyhow::Result<TcpStream> {
+    let mut buf = BytesMut::with_capacity(4096);
+
+    loop {
+        let n = stream.read_buf(&mut buf).await?;
+        if n == 0 {
+            return Err(anyhow::anyhow!("Connection closed during handshake"));
+        }
+
+        if let Some((req, _)) = parse_request(&buf)? {
+            let accept_key = generate_accept_key(req.key);
+            let response = build_response(&accept_key, None, None);
+            stream.write_all(&response).await?;
+            stream.flush().await?;
+            break;
+        }
+    }
+
+    Ok(stream)
+}
+
 async fn handle_client(
     stream: TcpStream,
     state: Arc<BridgeState>,
 ) -> anyhow::Result<()> {
-    // ⚠️ Required by yawc handshake API
-    let url = "ws://localhost/".parse().unwrap();
-
-    // Perform handshake over raw TCP stream
-    let ws = WebSocket::handshake(
-        url,
-        stream,
-        Options::default(),
-    ).await?;
-
-    // yawc implements Sink + Stream → split works
-    let (mut sink, mut source) = ws.split();
+    let stream = do_handshake(stream).await?;
+    let ws = WebSocketStream::server(stream, Config::default());
+    let (mut reader, mut writer) = ws.split();
 
     let mut rx = state.tx.subscribe();
 
-    // 🔹 Catch-up snapshot
+    // Catch-up snapshot: send all last known activity payloads to the new client.
     for entry in state.last_msgs.iter() {
         let payload = entry.value().clone();
-        sink.send(Frame::text(&*payload)).await?;
+        writer.send(Message::text(&*payload)).await?;
     }
 
     loop {
         tokio::select! {
-            // 🔥 Broadcast → client
+            // Broadcast → client
             msg = rx.recv() => {
                 match msg {
                     Ok(payload) => {
-                        if sink.send(Frame::text(&*payload)).await.is_err() {
+                        if writer.send(Message::text(&*payload)).await.is_err() {
                             break;
                         }
                     }
@@ -132,15 +145,15 @@ async fn handle_client(
                 }
             }
 
-            // 🔄 Incoming frames (correct type)
-            incoming = source.next() => {
+            // Incoming frames from client (ignore content, just drain to detect close)
+            incoming = reader.next() => {
                 match incoming {
-                    Some(frame) => {
-                        // frame is already a Frame (NOT Result)
-                        // yawc auto-handles ping/pong/close internally
-                        let _ = frame;
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Ok(_)) => {}
+                    Some(Err(e)) => {
+                        debug!("Bridge recv error: {}", e);
+                        break;
                     }
-                    None => break,
                 }
             }
         }

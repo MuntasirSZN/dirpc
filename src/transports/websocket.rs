@@ -2,15 +2,14 @@ use std::sync::Arc;
 
 use axum::{
     Router,
-    extract::{
-        Query, State,
-        ws::{Message, WebSocket, WebSocketUpgrade},
-    },
+    extract::{Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
 };
 use serde::Deserialize;
+use sockudo_ws::Message;
+use sockudo_ws::axum_integration::{WebSocket, WebSocketUpgrade};
 use tokio::net::TcpListener;
 use tracing::{debug, info, warn};
 
@@ -98,6 +97,7 @@ async fn ws_handler(
     let client_id = params.client_id.unwrap_or_default();
 
     ws.on_upgrade(move |socket| handle_ws_socket(socket, state, client_id))
+        .into_response()
 }
 
 async fn handle_ws_socket(mut socket: WebSocket, state: Arc<ServerState>, client_id: String) {
@@ -109,7 +109,7 @@ async fn handle_ws_socket(mut socket: WebSocket, state: Arc<ServerState>, client
 
     // Send DISPATCH/READY.
     if socket
-        .send(Message::Text(READY_PAYLOAD.to_string()))
+        .send(Message::text(READY_PAYLOAD))
         .await
         .is_err()
     {
@@ -125,7 +125,7 @@ async fn handle_ws_socket(mut socket: WebSocket, state: Arc<ServerState>, client
             outbound = rx.recv() => {
                 match outbound {
                     Some(json) => {
-                        if socket.send(Message::Text(json)).await.is_err() {
+                        if socket.send(Message::text(json)).await.is_err() {
                             break;
                         }
                     }
@@ -135,16 +135,18 @@ async fn handle_ws_socket(mut socket: WebSocket, state: Arc<ServerState>, client
             // Client → server
             inbound = socket.recv() => {
                 match inbound {
-                    Some(Ok(Message::Text(text))) => {
-                        match serde_json::from_str::<RpcMessage>(&text) {
-                            Ok(msg) => {
-                                if let Some(resp) =
-                                    state.handle_message(socket_id, &client_id, &msg).await
-                                {
-                                    state.send_to_socket(socket_id, resp).await;
+                    Some(Ok(msg)) if msg.is_text() => {
+                        if let Some(text) = msg.as_text() {
+                            match serde_json::from_str::<RpcMessage>(text) {
+                                Ok(rpc_msg) => {
+                                    if let Some(resp) =
+                                        state.handle_message(socket_id, &client_id, &rpc_msg).await
+                                    {
+                                        state.send_to_socket(socket_id, resp).await;
+                                    }
                                 }
+                                Err(e) => warn!("Bad WS JSON: {}", e),
                             }
-                            Err(e) => warn!("Bad WS JSON: {}", e),
                         }
                     }
                     Some(Ok(Message::Close(_))) | None => break,

@@ -349,8 +349,7 @@ fn test_invalid_origins() {
 #[tokio::test]
 async fn test_bridge_state_new() {
     let bridge = dirpc::bridge::BridgeState::new();
-    let map = bridge.last_msgs.lock().await;
-    assert!(map.is_empty());
+    assert!(bridge.last_msgs.is_empty());
 }
 
 #[tokio::test]
@@ -363,11 +362,11 @@ async fn test_bridge_broadcasts_activity() {
     // Simulate sending an activity payload.
     bridge
         .tx
-        .send(r#"{"application_id":"123"}"#.to_string())
+        .send(Arc::<str>::from(r#"{"application_id":"123"}"#))
         .unwrap();
 
     let received = sub.recv().await.unwrap();
-    assert_eq!(received, r#"{"application_id":"123"}"#);
+    assert_eq!(&*received, r#"{"application_id":"123"}"#);
 }
 
 #[tokio::test]
@@ -375,15 +374,16 @@ async fn test_bridge_last_msgs_updated() {
     use dirpc::bridge::BridgeState;
 
     let bridge = Arc::new(BridgeState::new());
-    {
-        let mut map = bridge.last_msgs.lock().await;
-        map.insert(1, json!({"application_id": "abc"}));
-        map.insert(2, json!({"application_id": "def"}));
-    }
+    bridge
+        .last_msgs
+        .insert(1, Arc::from(r#"{"application_id":"abc"}"#));
+    bridge
+        .last_msgs
+        .insert(2, Arc::from(r#"{"application_id":"def"}"#));
 
-    let map = bridge.last_msgs.lock().await;
-    assert_eq!(map.len(), 2);
-    assert_eq!(map[&1]["application_id"], "abc");
+    assert_eq!(bridge.last_msgs.len(), 2);
+    let val1 = bridge.last_msgs.get(&1).unwrap();
+    assert!(val1.contains("abc"));
 }
 
 #[test]

@@ -40,12 +40,12 @@ impl ServerState {
 
     /// Register a per-socket response sender.
     pub async fn register_socket(&self, socket_id: u64, tx: mpsc::UnboundedSender<String>) {
-        self.sockets.write().await.insert(socket_id, tx);
+        self.sockets.write().insert(socket_id, tx);
     }
 
     /// Remove a socket and emit a null-activity cleanup event.
     pub async fn unregister_socket(&self, socket_id: u64) {
-        self.sockets.write().await.remove(&socket_id);
+        self.sockets.write().remove(&socket_id);
         let _ = self.activity_tx.send(ActivityEvent {
             activity: None,
             pid: None,
@@ -55,7 +55,7 @@ impl ServerState {
 
     /// Forward a text frame to a specific socket.
     pub async fn send_to_socket(&self, socket_id: u64, msg: String) {
-        let sockets = self.sockets.read().await;
+        let sockets = self.sockets.read();
         if let Some(tx) = sockets.get(&socket_id) {
             let _ = tx.send(msg);
         }
