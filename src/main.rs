@@ -1,6 +1,7 @@
 use clap::Parser;
+use clap_verbosity_flag::{InfoLevel, Verbosity};
 use tracing::info;
-use tracing_subscriber::{EnvFilter, fmt};
+use tracing_subscriber::filter::LevelFilter;
 
 use dirpc::{
     bridge::start_bridge,
@@ -9,36 +10,45 @@ use dirpc::{
     transports::{ipc::start_ipc_server, websocket::start_ws_server},
 };
 
-/// Discord Rich Presence server – a Rust rewrite of arrpc.
+/// Discord Rich Presence server – a pure-Rust rewrite of arRPC.
 #[derive(Debug, Parser)]
-#[command(name = "dirpc", version, about)]
+#[command(name = env!("CARGO_PKG_NAME"), version, about)]
 pub struct Cli {
-    /// Bridge WebSocket port (env: DIRPC_BRIDGE_PORT).
-    #[arg(long, env = "DIRPC_BRIDGE_PORT", default_value = "1337")]
+    /// Bridge WebSocket port.
+    #[arg(short = 'p', long, env = "DIRPC_BRIDGE_PORT", default_value = "1337")]
     pub bridge_port: u16,
 
     /// Disable the IPC transport.
-    #[arg(long, default_value = "false")]
+    #[arg(short = 'I', long, default_value = "false")]
     pub no_ipc: bool,
 
     /// Disable the WebSocket transport.
-    #[arg(long, default_value = "false")]
+    #[arg(short = 'W', long, default_value = "false")]
     pub no_ws: bool,
 
     /// Disable the process scanner.
-    #[arg(long, default_value = "false")]
+    #[arg(short = 'S', long, default_value = "false")]
     pub no_scanner: bool,
 
-    /// Log level filter (e.g. debug, info, warn).
-    #[arg(long, env = "RUST_LOG", default_value = "info")]
-    pub log_level: String,
+    #[command(flatten)]
+    pub verbose: Verbosity<InfoLevel>,
 }
 
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
 
-    fmt().with_env_filter(EnvFilter::new(&cli.log_level)).init();
+    // Map the log::LevelFilter from clap-verbosity-flag to a tracing LevelFilter.
+    let level = match cli.verbose.log_level_filter() {
+        log::LevelFilter::Off => LevelFilter::OFF,
+        log::LevelFilter::Error => LevelFilter::ERROR,
+        log::LevelFilter::Warn => LevelFilter::WARN,
+        log::LevelFilter::Info => LevelFilter::INFO,
+        log::LevelFilter::Debug => LevelFilter::DEBUG,
+        log::LevelFilter::Trace => LevelFilter::TRACE,
+    };
+
+    tracing_subscriber::fmt().with_max_level(level).init();
 
     info!("Starting dirpc (bridge port {})", cli.bridge_port);
 
@@ -80,3 +90,4 @@ async fn main() {
         std::future::pending::<()>().await;
     }
 }
+

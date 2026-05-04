@@ -29,15 +29,12 @@ serde_json = "1"
 simd-json = "0.17"
 jiff = "0.2"
 sysinfo = "0.38"
-reqwest = { version = "0.13", features = ["json", "rustls", "socks"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 clap = { version = "4", features = ["derive", "env"] }
 clap-verbosity-flag = { version = "3", features = ["tracing"] }
+log = "0.4"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = [
-  "env-filter",
-  "fmt",
-  "parking_lot",
-] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 dashmap = "6.1.0"
 parking_lot = "0.12.5"
 anyhow = { version = "1.0.102", features = ["backtrace"] }
@@ -46,6 +43,6 @@ anyhow = { version = "1.0.102", features = ["backtrace"] }
 tokio-test = "0.4"
 divan = "0.1"
 
-#[[bench]]
-#name = "benchmarks"
-#harness = false
+[[bench]]
+name = "benchmarks"
+harness = false

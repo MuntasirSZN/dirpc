@@ -1,8 +1,13 @@
 use std::collections::HashMap;
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-};
+use std::sync::Arc;
+
+// Use the native-word-size atomic for the socket-ID counter so this compiles
+// on 32-bit targets (AtomicU64 is not available on all 32-bit platforms).
+#[cfg(target_pointer_width = "64")]
+use std::sync::atomic::AtomicU64 as AtomicSocketCounter;
+#[cfg(not(target_pointer_width = "64"))]
+use std::sync::atomic::AtomicU32 as AtomicSocketCounter;
+use std::sync::atomic::Ordering;
 
 use parking_lot::RwLock;
 use serde_json::{Value, json};
@@ -16,7 +21,7 @@ pub const READY_PAYLOAD: &str = r#"{"cmd":"DISPATCH","data":{"v":1,"config":{"cd
 
 /// Shared server state threaded through all transport handlers.
 pub struct ServerState {
-    pub next_socket_id: AtomicU64,
+    pub next_socket_id: AtomicSocketCounter,
     pub activity_tx: broadcast::Sender<ActivityEvent>,
     sockets: RwLock<HashMap<u64, mpsc::UnboundedSender<String>>>,
 }
@@ -26,7 +31,7 @@ impl ServerState {
     pub fn new() -> (Arc<Self>, broadcast::Receiver<ActivityEvent>) {
         let (activity_tx, activity_rx) = broadcast::channel(64);
         let state = Arc::new(Self {
-            next_socket_id: AtomicU64::new(1),
+            next_socket_id: AtomicSocketCounter::new(1),
             activity_tx,
             sockets: RwLock::new(HashMap::new()),
         });
@@ -35,7 +40,14 @@ impl ServerState {
 
     /// Allocate the next unique socket identifier.
     pub fn next_id(&self) -> u64 {
-        self.next_socket_id.fetch_add(1, Ordering::SeqCst)
+        #[cfg(target_pointer_width = "64")]
+        {
+            self.next_socket_id.fetch_add(1, Ordering::Relaxed)
+        }
+        #[cfg(not(target_pointer_width = "64"))]
+        {
+            self.next_socket_id.fetch_add(1, Ordering::Relaxed) as u64
+        }
     }
 
     /// Register a per-socket response sender.
@@ -83,15 +95,13 @@ impl ServerState {
                             pid,
                             socket_id,
                         });
-                        Some(
-                            serde_json::to_string(&json!({
-                                "cmd": msg.cmd,
-                                "data": null,
-                                "evt": null,
-                                "nonce": msg.nonce,
-                            }))
-                            .unwrap(),
-                        )
+                        serde_json::to_string(&json!({
+                            "cmd": msg.cmd,
+                            "data": null,
+                            "evt": null,
+                            "nonce": msg.nonce,
+                        }))
+                        .ok()
                     }
                     Some(raw_activity) => {
                         let mut activity = raw_activity.clone();
@@ -164,28 +174,24 @@ impl ServerState {
                             obj.insert("type".to_string(), json!(0u32));
                         }
 
-                        Some(
-                            serde_json::to_string(&json!({
-                                "cmd": msg.cmd,
-                                "data": resp_data,
-                                "evt": null,
-                                "nonce": msg.nonce,
-                            }))
-                            .unwrap(),
-                        )
+                        serde_json::to_string(&json!({
+                            "cmd": msg.cmd,
+                            "data": resp_data,
+                            "evt": null,
+                            "nonce": msg.nonce,
+                        }))
+                        .ok()
                     }
                 }
             }
 
-            "CONNECTIONS_CALLBACK" => Some(
-                serde_json::to_string(&json!({
-                    "cmd": msg.cmd,
-                    "data": {"code": 1000},
-                    "evt": "ERROR",
-                    "nonce": msg.nonce,
-                }))
-                .unwrap(),
-            ),
+            "CONNECTIONS_CALLBACK" => serde_json::to_string(&json!({
+                "cmd": msg.cmd,
+                "data": {"code": 1000},
+                "evt": "ERROR",
+                "nonce": msg.nonce,
+            }))
+            .ok(),
 
             "INVITE_BROWSER" => {
                 debug!("INVITE_BROWSER: {:?}", msg.args);
@@ -214,7 +220,7 @@ impl Default for ServerState {
     fn default() -> Self {
         let (activity_tx, _) = broadcast::channel(64);
         Self {
-            next_socket_id: AtomicU64::new(1),
+            next_socket_id: AtomicSocketCounter::new(1),
             activity_tx,
             sockets: RwLock::new(HashMap::new()),
         }
@@ -223,18 +229,13 @@ impl Default for ServerState {
 
 /// Convert a timestamp to milliseconds if it appears to be in seconds.
 ///
-/// Heuristic: if the current time in milliseconds has more than 2 more digits
-/// than `ts`, treat `ts` as a seconds value and multiply by 1000.
-/// This matches the original arRPC behaviour (`Date.now().length - ts.length > 2`).
+/// Uses [`jiff::Timestamp::now`] (panic-free) to determine the current time in
+/// milliseconds, then applies the same heuristic as arRPC: if the current time
+/// in ms has more than 2 more digits than `ts`, treat `ts` as seconds.
 pub fn maybe_to_ms(ts: i64) -> i64 {
-    // SystemTime should always be after UNIX_EPOCH on any supported system.
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock is before UNIX_EPOCH")
-        .as_millis() as u64;
-
-    let now_len = now_ms.to_string().len();
-    let ts_len = (ts.unsigned_abs()).to_string().len();
+    let now_ms = jiff::Timestamp::now().as_millisecond();
+    let now_len = now_ms.unsigned_abs().to_string().len();
+    let ts_len = ts.unsigned_abs().to_string().len();
 
     if now_len as i64 - ts_len as i64 > 2 {
         ts * 1000
@@ -242,3 +243,4 @@ pub fn maybe_to_ms(ts: i64) -> i64 {
         ts
     }
 }
+

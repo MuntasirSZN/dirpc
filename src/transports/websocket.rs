@@ -133,7 +133,7 @@ async fn handle_ws_socket(mut socket: WebSocket, state: Arc<ServerState>, client
                 match inbound {
                     Some(Ok(msg)) if msg.is_text() => {
                         if let Some(text) = msg.as_text() {
-                            match serde_json::from_str::<RpcMessage>(text) {
+                            match crate::json::from_str::<RpcMessage>(text) {
                                 Ok(rpc_msg) => {
                                     if let Some(resp) =
                                         state.handle_message(socket_id, &client_id, &rpc_msg).await

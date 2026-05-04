@@ -17,70 +17,54 @@ pub struct ProcessInfo {
     pub pid: u32,
     /// Path to the executable (argv[0]).
     pub path: String,
-    /// Additional command-line arguments.
+    /// Additional command-line arguments (argv[1..]).
     pub args: Vec<String>,
 }
 
-/// Read the current process list.
-///
-/// On Linux this reads `/proc`; on other platforms returns an empty list.
+/// Read the current process list using [`sysinfo`] (cross-platform).
 pub async fn get_process_list() -> Vec<ProcessInfo> {
-    #[cfg(target_os = "linux")]
-    {
-        read_proc_linux().await
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        Vec::new()
-    }
-}
+    tokio::task::spawn_blocking(|| {
+        use sysinfo::{ProcessesToUpdate, System};
 
-#[cfg(target_os = "linux")]
-async fn read_proc_linux() -> Vec<ProcessInfo> {
-    let mut result = Vec::new();
+        let mut sys = System::new();
+        sys.refresh_processes(ProcessesToUpdate::All, false);
 
-    let mut dir = match tokio::fs::read_dir("/proc").await {
-        Ok(d) => d,
-        Err(_) => return result,
-    };
-
-    while let Ok(Some(entry)) = dir.next_entry().await {
-        let name = entry.file_name();
-        let Ok(pid) = name.to_string_lossy().parse::<u32>() else {
-            continue;
-        };
-
-        let cmdline_path = format!("/proc/{}/cmdline", pid);
-        let Ok(data) = tokio::fs::read(&cmdline_path).await else {
-            continue;
-        };
-
-        // cmdline entries are null-separated.
-        let parts: Vec<String> = data
-            .split(|&b| b == 0)
-            .filter(|s| !s.is_empty())
-            .map(|s| String::from_utf8_lossy(s).into_owned())
-            .collect();
-
-        if let Some(path) = parts.first() {
-            result.push(ProcessInfo {
-                pid,
-                path: path.clone(),
-                args: parts[1..].to_vec(),
-            });
-        }
-    }
-
-    result
+        sys.processes()
+            .values()
+            .filter_map(|proc| {
+                let path = proc.exe()?.to_string_lossy().into_owned();
+                if path.is_empty() {
+                    return None;
+                }
+                let args: Vec<String> = proc
+                    .cmd()
+                    .iter()
+                    .skip(1) // skip argv[0] (the executable itself)
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .collect();
+                Some(ProcessInfo {
+                    pid: proc.pid().as_u32(),
+                    path,
+                    args,
+                })
+            })
+            .collect()
+    })
+    .await
+    .unwrap_or_default()
 }
 
 // ── Scanner ───────────────────────────────────────────────────────────────────
 
 /// Run the process scanner loop: every 5 seconds scan running processes and
 /// emit `SET_ACTIVITY` events for newly detected or lost games.
+///
+/// The detectable-apps list is loaded once at startup (from cache or network)
+/// and refreshed weekly in the background.
 pub async fn start_process_scanner(state: Arc<ServerState>) {
-    let entries = load_detectable();
-    let mut active: HashMap<u32, String> = HashMap::new(); // pid → game id
+    let mut entries = load_detectable().await;
+    let mut active: HashMap<u32, String> = HashMap::new();
+    let mut last_refresh = std::time::Instant::now();
 
     info!(
         "Process scanner started ({} detectable entries)",
@@ -89,6 +73,14 @@ pub async fn start_process_scanner(state: Arc<ServerState>) {
 
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+        // Refresh the detectable list once per week.
+        if last_refresh.elapsed().as_secs() > 7 * 24 * 3600 {
+            entries = load_detectable().await;
+            last_refresh = std::time::Instant::now();
+            info!("Refreshed detectable list ({} entries)", entries.len());
+        }
+
         scan_once(&state, &entries, &mut active).await;
     }
 }
@@ -153,9 +145,8 @@ pub async fn scan_once(
     *active = still_present;
 }
 
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
+/// Current Unix time in milliseconds, using [`jiff`] (panic-free).
+fn now_ms() -> i64 {
+    jiff::Timestamp::now().as_millisecond()
 }
+

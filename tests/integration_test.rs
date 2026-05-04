@@ -3,7 +3,7 @@ use std::sync::Arc;
 use dirpc::{
     decode, encode,
     process::detectable::{
-        load_detectable, match_process, path_filename, path_variants, strip_64_suffix,
+        load_detectable_embedded, match_process, path_filename, path_variants, strip_64_suffix,
     },
     server::{READY_PAYLOAD, ServerState, maybe_to_ms},
     types::{ActivityEvent, IpcOpcode, RpcMessage},
@@ -436,7 +436,7 @@ fn test_path_variants_includes_64_cleaned() {
 
 #[test]
 fn test_match_process_found_by_filename() {
-    let entries = load_detectable();
+    let entries = load_detectable_embedded();
     let entry = match_process("/home/user/.steam/csgo", &[], &entries);
     assert!(entry.is_some());
     assert_eq!(entry.unwrap().id, "359550717720469504");
@@ -444,7 +444,7 @@ fn test_match_process_found_by_filename() {
 
 #[test]
 fn test_match_process_found_win_exe() {
-    let entries = load_detectable();
+    let entries = load_detectable_embedded();
     let entry = match_process(r"C:\games\overwatch.exe", &[], &entries);
     assert!(entry.is_some());
     assert_eq!(entry.unwrap().name, "Overwatch");
@@ -452,7 +452,7 @@ fn test_match_process_found_win_exe() {
 
 #[test]
 fn test_match_process_cs2() {
-    let entries = load_detectable();
+    let entries = load_detectable_embedded();
     let entry = match_process("/home/user/.steam/cs2", &[], &entries);
     assert!(entry.is_some());
     assert_eq!(entry.unwrap().id, "1073232715901124688");
@@ -460,7 +460,7 @@ fn test_match_process_cs2() {
 
 #[test]
 fn test_match_process_no_match() {
-    let entries = load_detectable();
+    let entries = load_detectable_embedded();
     let entry = match_process("/usr/bin/notepad", &[], &entries);
     assert!(entry.is_none());
 }
@@ -512,7 +512,7 @@ fn test_match_process_with_required_args() {
 
 #[test]
 fn test_detectable_json_loads() {
-    let entries = load_detectable();
+    let entries = load_detectable_embedded();
     assert!(!entries.is_empty());
 }
 
