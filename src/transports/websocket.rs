@@ -108,11 +108,7 @@ async fn handle_ws_socket(mut socket: WebSocket, state: Arc<ServerState>, client
     );
 
     // Send DISPATCH/READY.
-    if socket
-        .send(Message::text(READY_PAYLOAD))
-        .await
-        .is_err()
-    {
+    if socket.send(Message::text(READY_PAYLOAD)).await.is_err() {
         return;
     }
 
