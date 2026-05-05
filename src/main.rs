@@ -1,7 +1,6 @@
 use clap::Parser;
 use clap_verbosity_flag::{InfoLevel, Verbosity};
 use tracing::info;
-use tracing_subscriber::filter::LevelFilter;
 
 use dirpc::{
     bridge::start_bridge,

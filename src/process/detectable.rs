@@ -25,15 +25,13 @@ pub struct DetectableEntry {
     pub executables: Vec<Executable>,
 }
 
-// ── Remote fetch + on-disk cache ─────────────────────────────────────────────
+// ── Remote fetch + ETag-based on-disk cache ───────────────────────────────────
 
 /// Discord's detectable-applications endpoint.
 const DETECTABLE_URL: &str = "https://discord.com/api/v9/applications/detectable";
-/// Re-fetch the list if the cached file is older than this.
-const CACHE_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60); // 1 week
 
-/// Platform-specific path for the on-disk detectable cache.
-fn cache_path() -> PathBuf {
+/// Platform-specific cache directory for dirpc.
+fn cache_dir() -> PathBuf {
     #[cfg(windows)]
     let base = std::env::var("LOCALAPPDATA")
         .or_else(|_| std::env::var("APPDATA"))
@@ -44,89 +42,108 @@ fn cache_path() -> PathBuf {
     let base = std::env::var("XDG_CACHE_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
-            let home = std::env::home_dir().unwrap_or_else(|| "/tmp".to_string().into());
-            PathBuf::from(home).join(".cache")
+            let home = std::env::home_dir().unwrap_or_else(|| "/tmp".into());
+            home.join(".cache")
         });
 
-    base.join("dirpc").join("detectable.json")
+    base.join("dirpc")
 }
 
-/// Return `true` when the cache file exists and was written within [`CACHE_TTL`].
-async fn cache_is_fresh(path: &PathBuf) -> bool {
-    let meta = match tokio::fs::metadata(path).await {
-        Ok(m) => m,
-        Err(_) => return false,
-    };
-    let modified = match meta.modified() {
-        Ok(t) => t,
-        Err(_) => return false,
-    };
+fn cache_json_path() -> PathBuf { cache_dir().join("detectable.json") }
+fn cache_etag_path() -> PathBuf { cache_dir().join("detectable.etag") }
 
-    let Ok(modified_ts) = jiff::Timestamp::try_from(modified) else {
-        return false;
-    };
-
-    let Ok(ttl) = jiff::SignedDuration::try_from(CACHE_TTL) else {
-        return false;
-    };
-
-    jiff::Timestamp::now().duration_since(modified_ts) < ttl
+/// Read the stored ETag from disk, if any.
+async fn read_etag() -> Option<String> {
+    tokio::fs::read_to_string(cache_etag_path()).await.ok()
 }
 
-/// Fetch the detectable list from Discord's API.
-async fn fetch_detectable() -> anyhow::Result<Vec<DetectableEntry>> {
-    let client = reqwest::Client::builder()
+/// Fetch the detectable list from Discord's API, honouring a stored ETag.
+///
+/// Returns `Ok(None)` when the server replies 304 Not Modified (cache still fresh).
+/// Returns `Ok(Some((entries, etag)))` on a successful 200 response.
+async fn fetch_detectable(
+    etag: Option<&str>,
+) -> anyhow::Result<Option<(Vec<DetectableEntry>, Option<String>)>> {
+    let mut req = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .user_agent(concat!(clap::crate_name!(), "/", clap::crate_version!()))
-        .build()?;
-    let bytes = client.get(DETECTABLE_URL).send().await?.bytes().await?;
-    let mut data = bytes.to_vec();
+        .build()?
+        .get(DETECTABLE_URL);
 
-    let entries: Vec<DetectableEntry> = crate::json::from_slice(&mut data)?;
+    if let Some(tag) = etag {
+        req = req.header(reqwest::header::IF_NONE_MATCH, tag);
+    }
 
-    Ok(entries)
+    let resp = req.send().await?;
+
+    if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
+        return Ok(None);
+    }
+
+    let new_etag = resp
+        .headers()
+        .get(reqwest::header::ETAG)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+
+    let mut bytes = resp.bytes().await?.to_vec();
+    let entries: Vec<DetectableEntry> = crate::json::from_slice(&mut bytes)?;
+
+    Ok(Some((entries, new_etag)))
 }
 
-/// Load the detectable apps list.
-///
-/// Strategy (in order):
-/// 1. Fresh on-disk cache → deserialise and return.
-/// 2. Network fetch → persist to cache, return.
-/// 3. Stale on-disk cache → return stale data with a warning.
-/// 4. Embedded fallback (compile-time snapshot).
-pub async fn load_detectable() -> Vec<DetectableEntry> {
-    let path = cache_path();
+/// Load cached detectable entries from disk. Returns `None` if absent or corrupt.
+async fn load_cache() -> Option<Vec<DetectableEntry>> {
+    let mut data = tokio::fs::read(cache_json_path()).await.ok()?;
+    crate::json::from_slice::<Vec<DetectableEntry>>(&mut data).ok()
+}
 
-    // 1. Fresh cache
-    if cache_is_fresh(&path).await {
-        if let Ok(data) = tokio::fs::read(&path).await {
-            if let Ok(entries) = crate::json::from_slice::<Vec<DetectableEntry>>(&mut data.clone())
-            {
+/// Persist entries and ETag to disk (best-effort).
+async fn save_cache(entries: &[DetectableEntry], etag: Option<&str>) {
+    let dir = cache_dir();
+    let _ = tokio::fs::create_dir_all(&dir).await;
+    if let Ok(bytes) = crate::json::to_vec(entries) {
+        let _ = tokio::fs::write(cache_json_path(), bytes).await;
+    }
+    if let Some(tag) = etag {
+        let _ = tokio::fs::write(cache_etag_path(), tag).await;
+    }
+}
+
+/// Load the detectable apps list at runtime.
+///
+/// Strategy:
+/// 1. Send a request to Discord's API with `If-None-Match: <stored-etag>`.
+///    - **304 Not Modified** → cache is still current; deserialise and return it.
+///    - **200 OK** → update the on-disk cache + ETag file, return new data.
+/// 2. On any network or parse failure → fall back to the on-disk cache with a warning.
+/// 3. No network **and** no cache → return an empty vec with a warning.
+pub async fn load_detectable() -> Vec<DetectableEntry> {
+    let etag = read_etag().await;
+
+    match fetch_detectable(etag.as_deref()).await {
+        // Server says cache is still current.
+        Ok(None) => {
+            if let Some(entries) = load_cache().await {
                 return entries;
             }
+            warn!("ETag indicated cache is fresh but cache file is missing; returning empty list");
+            vec![]
         }
-    }
-
-    // 2. Network fetch
-    match fetch_detectable().await {
-        Ok(entries) => {
-            // Persist to disk (best-effort).
-            if let Some(parent) = path.parent() {
-                let _ = tokio::fs::create_dir_all(parent).await;
-            }
-            if let Ok(serialised) = crate::json::to_vec(&entries) {
-                let _ = tokio::fs::write(&path, serialised).await;
-            }
-            return entries;
+        // Fresh data from server.
+        Ok(Some((entries, new_etag))) => {
+            save_cache(&entries, new_etag.as_deref()).await;
+            entries
         }
-        Err(e) => warn!("Failed to fetch detectable list: {e}"),
-    }
-
-    // 3. Stale cache
-    if let Ok(data) = tokio::fs::read(&path).await {
-        if let Ok(entries) = crate::json::from_slice::<Vec<DetectableEntry>>(&mut data.clone()) {
-            warn!("Using stale detectable cache");
-            return entries;
+        // Network or parse error.
+        Err(e) => {
+            warn!("Failed to fetch detectable list: {e}");
+            if let Some(entries) = load_cache().await {
+                warn!("Using stale detectable cache");
+                return entries;
+            }
+            warn!("No cached detectable data available; game detection will be unavailable");
+            vec![]
         }
     }
 }
