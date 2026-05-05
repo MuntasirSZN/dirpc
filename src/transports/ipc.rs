@@ -7,8 +7,6 @@ use tracing::{debug, error, info, warn};
 use crate::server::{READY_PAYLOAD, ServerState};
 use crate::types::{Handshake, IpcOpcode};
 
-// ── Wire helpers ────────────────────────────────────────────────────────────
-
 /// Encode an IPC frame: 4-byte LE opcode + 4-byte LE length + payload bytes.
 pub fn encode(opcode: i32, data: &str) -> Vec<u8> {
     let bytes = data.as_bytes();
@@ -46,8 +44,6 @@ async fn read_frame<R: AsyncReadExt + Unpin>(reader: &mut R) -> std::io::Result<
     Ok((opcode, body))
 }
 
-// ── Socket / pipe paths ───────────────────────────────────────────────────────
-
 /// Build the IPC path for `discord-ipc-{n}`.
 ///
 /// | Platform      | Path format                                                |
@@ -76,8 +72,6 @@ pub fn ipc_path(n: u8) -> PathBuf {
 pub fn ipc_path(n: u8) -> PathBuf {
     std::env::temp_dir().join(format!("discord-ipc-{}", n))
 }
-
-// ── Shared connection handler ─────────────────────────────────────────────────
 
 /// Drive a fully-connected IPC client: perform the Discord RPC handshake, then
 /// run the read/write loop until the connection closes.
@@ -187,8 +181,6 @@ where
     debug!("IPC connection closed for socket_id={}", socket_id);
 }
 
-// ── Unix implementation ───────────────────────────────────────────────────────
-
 /// Start the IPC transport using Unix domain sockets.
 #[cfg(unix)]
 pub async fn start_ipc_server(state: Arc<ServerState>) -> std::io::Result<()> {
@@ -255,8 +247,6 @@ pub async fn find_available_socket() -> Option<(tokio::net::UnixListener, PathBu
     None
 }
 
-// ── Windows implementation ────────────────────────────────────────────────────
-
 /// Start the IPC transport using Windows named pipes.
 #[cfg(windows)]
 pub async fn start_ipc_server(state: Arc<ServerState>) -> std::io::Result<()> {
@@ -314,8 +304,6 @@ async fn find_available_pipe() -> Option<(tokio::net::windows::named_pipe::Named
     }
     None
 }
-
-// ── Stub for other platforms ──────────────────────────────────────────────────
 
 /// No-op IPC server for platforms other than Unix and Windows.
 #[cfg(not(any(unix, windows)))]

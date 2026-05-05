@@ -25,8 +25,6 @@ pub struct DetectableEntry {
     pub executables: Vec<Executable>,
 }
 
-// ── Remote fetch + ETag-based on-disk cache ───────────────────────────────────
-
 /// Discord's detectable-applications endpoint.
 const DETECTABLE_URL: &str = "https://discord.com/api/v9/applications/detectable";
 
@@ -49,8 +47,12 @@ fn cache_dir() -> PathBuf {
     base.join("dirpc")
 }
 
-fn cache_json_path() -> PathBuf { cache_dir().join("detectable.json") }
-fn cache_etag_path() -> PathBuf { cache_dir().join("detectable.etag") }
+fn cache_json_path() -> PathBuf {
+    cache_dir().join("detectable.json")
+}
+fn cache_etag_path() -> PathBuf {
+    cache_dir().join("detectable.etag")
+}
 
 /// Read the stored ETag from disk, if any.
 async fn read_etag() -> Option<String> {
@@ -148,8 +150,6 @@ pub async fn load_detectable() -> Vec<DetectableEntry> {
     }
 }
 
-// ── Path-variant helpers ──────────────────────────────────────────────────────
-
 /// Generate candidate comparison strings from a process path.
 ///
 /// Produces up to 4 trailing path components joined with `/`, plus de-64-bit-ified
@@ -196,8 +196,6 @@ pub fn path_filename(path: &str) -> &str {
         .rfind(|s| !s.is_empty())
         .unwrap_or("")
 }
-
-// ── Matching ─────────────────────────────────────────────────────────────────
 
 /// Return the first `DetectableEntry` whose executable list matches `path` / `args`.
 pub fn match_process<'a>(

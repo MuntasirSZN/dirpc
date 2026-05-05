@@ -16,8 +16,6 @@ use tracing::{debug, info, warn};
 use crate::server::{READY_PAYLOAD, ServerState};
 use crate::types::RpcMessage;
 
-// ── Origin validation ─────────────────────────────────────────────────────────
-
 /// Return `true` when the `Origin` header is acceptable for WebSocket upgrades.
 ///
 /// An empty origin (direct / non-browser connections) is permitted, as are the
@@ -29,16 +27,12 @@ pub fn validate_origin(origin: &str) -> bool {
     )
 }
 
-// ── Query parameters ──────────────────────────────────────────────────────────
-
 #[derive(Debug, Deserialize)]
 pub struct WsQueryParams {
     pub v: Option<u32>,
     pub encoding: Option<String>,
     pub client_id: Option<String>,
 }
-
-// ── Server ────────────────────────────────────────────────────────────────────
 
 /// Try to bind an HTTP/WebSocket server on the first available port in 6463-6472.
 pub async fn start_ws_server(state: Arc<ServerState>) -> std::io::Result<()> {
@@ -66,8 +60,6 @@ pub async fn start_ws_server(state: Arc<ServerState>) -> std::io::Result<()> {
 pub fn make_router(state: Arc<ServerState>) -> Router {
     Router::new().route("/", get(ws_handler)).with_state(state)
 }
-
-// ── Handler ───────────────────────────────────────────────────────────────────
 
 async fn ws_handler(
     ws: WebSocketUpgrade,

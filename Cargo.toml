@@ -42,6 +42,25 @@ parking_lot = "0.12.5"
 anyhow = { version = "1.0.102", features = ["backtrace"] }
 serde_json = "1"
 
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+mimalloc-safe = { version = "0.1", default-features = false, features = [
+  "extended",
+] }
+
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+mimalloc-safe = { version = "0.1", default-features = false, features = [
+  "extended",
+  "no_opt_arch",
+] }
+
+[target.'cfg(target_env = "msvc")'.dependencies]
+mimalloc-safe = { version = "0.1", default-features = false, features = [
+  "extended",
+  "no_opt_arch",
+  "override",
+] }
+
 [target.'cfg(target_endian = "little")'.dependencies]
 simd-json = "0.17"
 

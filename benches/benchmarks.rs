@@ -1,3 +1,8 @@
+use mimalloc_safe::MiMalloc;
+
+#[global_allocator]
+static GLOBAL: AllocProfiler<MiMalloc> = AllocProfiler::new(MiMalloc);
+
 fn main() {
     divan::main();
 }

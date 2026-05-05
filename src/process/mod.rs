@@ -9,8 +9,6 @@ use tracing::{debug, info};
 use crate::server::ServerState;
 use detectable::{DetectableEntry, load_detectable, match_process};
 
-// ── Process list ─────────────────────────────────────────────────────────────
-
 /// Information about a single running process.
 #[derive(Debug, Clone)]
 pub struct ProcessInfo {
@@ -53,8 +51,6 @@ pub async fn get_process_list() -> Vec<ProcessInfo> {
     .await
     .unwrap_or_default()
 }
-
-// ── Scanner ───────────────────────────────────────────────────────────────────
 
 /// Run the process scanner loop: every 5 seconds scan running processes and
 /// emit `SET_ACTIVITY` events for newly detected or lost games.

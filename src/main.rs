@@ -9,6 +9,11 @@ use dirpc::{
     transports::{ipc::start_ipc_server, websocket::start_ws_server},
 };
 
+use mimalloc_safe::MiMalloc;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
 /// Discord Rich Presence server – a pure-Rust rewrite of arRPC.
 #[derive(Debug, Parser)]
 #[command(name = clap::crate_name!(), version, about)]
