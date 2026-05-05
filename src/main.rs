@@ -12,7 +12,7 @@ use dirpc::{
 
 /// Discord Rich Presence server – a pure-Rust rewrite of arRPC.
 #[derive(Debug, Parser)]
-#[command(name = env!("CARGO_PKG_NAME"), version, about)]
+#[command(name = clap::crate_name!(), version, about)]
 pub struct Cli {
     /// Bridge WebSocket port.
     #[arg(short = 'p', long, env = "DIRPC_BRIDGE_PORT", default_value = "1337")]
@@ -31,24 +31,16 @@ pub struct Cli {
     pub no_scanner: bool,
 
     #[command(flatten)]
-    pub verbose: Verbosity<InfoLevel>,
+    pub verbosity: Verbosity<InfoLevel>,
 }
 
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
 
-    // Map the log::LevelFilter from clap-verbosity-flag to a tracing LevelFilter.
-    let level = match cli.verbose.log_level_filter() {
-        log::LevelFilter::Off => LevelFilter::OFF,
-        log::LevelFilter::Error => LevelFilter::ERROR,
-        log::LevelFilter::Warn => LevelFilter::WARN,
-        log::LevelFilter::Info => LevelFilter::INFO,
-        log::LevelFilter::Debug => LevelFilter::DEBUG,
-        log::LevelFilter::Trace => LevelFilter::TRACE,
-    };
-
-    tracing_subscriber::fmt().with_max_level(level).init();
+    tracing_subscriber::fmt()
+        .with_max_level(cli.verbosity)
+        .init();
 
     info!("Starting dirpc (bridge port {})", cli.bridge_port);
 
@@ -90,4 +82,3 @@ async fn main() {
         std::future::pending::<()>().await;
     }
 }
-

@@ -57,14 +57,24 @@ fn bench_path_filename(bencher: divan::Bencher, path: &str) {
 #[divan::bench]
 fn bench_match_process_hit(bencher: divan::Bencher) {
     let entries = dirpc::load_detectable_embedded();
-    bencher.bench(|| divan::black_box(dirpc::match_process("/home/user/.steam/csgo", &[], &entries)));
+    bencher.bench(|| {
+        divan::black_box(dirpc::match_process(
+            "/home/user/.steam/csgo",
+            &[],
+            &entries,
+        ))
+    });
 }
 
 #[divan::bench]
 fn bench_match_process_miss(bencher: divan::Bencher) {
     let entries = dirpc::load_detectable_embedded();
     bencher.bench(|| {
-        divan::black_box(dirpc::match_process("/usr/bin/definitely-not-a-game", &[], &entries))
+        divan::black_box(dirpc::match_process(
+            "/usr/bin/definitely-not-a-game",
+            &[],
+            &entries,
+        ))
     });
 }
 

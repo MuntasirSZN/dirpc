@@ -55,7 +55,7 @@ pub async fn start_bridge(
                             state_feed.last_msgs.remove(&key);
                         }
                         Some(v) => {
-                            let json = match serde_json::to_string(v) {
+                            let json = match crate::json::to_string(v) {
                                 Ok(s) => Arc::<str>::from(s),
                                 Err(_) => continue,
                             };

@@ -296,8 +296,8 @@ pub async fn start_ipc_server(state: Arc<ServerState>) -> std::io::Result<()> {
 /// Try to create a `first_pipe_instance` named pipe for each path 0-9, returning
 /// the first one that succeeds (i.e. not already claimed by a running Discord client).
 #[cfg(windows)]
-async fn find_available_pipe(
-) -> Option<(tokio::net::windows::named_pipe::NamedPipeServer, String)> {
+async fn find_available_pipe() -> Option<(tokio::net::windows::named_pipe::NamedPipeServer, String)>
+{
     use tokio::net::windows::named_pipe::ServerOptions;
 
     for n in 0u8..10 {
@@ -324,4 +324,3 @@ pub async fn start_ipc_server(_state: Arc<ServerState>) -> std::io::Result<()> {
     std::future::pending::<()>().await;
     Ok(())
 }
-

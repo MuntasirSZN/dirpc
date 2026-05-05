@@ -1,16 +1,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-// Use the native-word-size atomic for the socket-ID counter so this compiles
-// on 32-bit targets (AtomicU64 is not available on all 32-bit platforms).
-#[cfg(target_pointer_width = "64")]
-use std::sync::atomic::AtomicU64 as AtomicSocketCounter;
 #[cfg(not(target_pointer_width = "64"))]
-use std::sync::atomic::AtomicU32 as AtomicSocketCounter;
+use std::sync::atomic::AtomicU32 as Atomic;
+#[cfg(target_pointer_width = "64")]
+use std::sync::atomic::AtomicU64 as Atomic;
 use std::sync::atomic::Ordering;
 
+use crate::json::{Value, json};
 use parking_lot::RwLock;
-use serde_json::{Value, json};
 use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, warn};
 
@@ -21,7 +19,7 @@ pub const READY_PAYLOAD: &str = r#"{"cmd":"DISPATCH","data":{"v":1,"config":{"cd
 
 /// Shared server state threaded through all transport handlers.
 pub struct ServerState {
-    pub next_socket_id: AtomicSocketCounter,
+    pub next_socket_id: Atomic,
     pub activity_tx: broadcast::Sender<ActivityEvent>,
     sockets: RwLock<HashMap<u64, mpsc::UnboundedSender<String>>>,
 }
@@ -31,7 +29,7 @@ impl ServerState {
     pub fn new() -> (Arc<Self>, broadcast::Receiver<ActivityEvent>) {
         let (activity_tx, activity_rx) = broadcast::channel(64);
         let state = Arc::new(Self {
-            next_socket_id: AtomicSocketCounter::new(1),
+            next_socket_id: Atomic::new(1),
             activity_tx,
             sockets: RwLock::new(HashMap::new()),
         });
@@ -95,7 +93,7 @@ impl ServerState {
                             pid,
                             socket_id,
                         });
-                        serde_json::to_string(&json!({
+                        crate::json::to_string(&json!({
                             "cmd": msg.cmd,
                             "data": null,
                             "evt": null,
@@ -105,8 +103,8 @@ impl ServerState {
                     }
                     Some(raw_activity) => {
                         let mut activity = raw_activity.clone();
-                        let mut metadata = serde_json::Map::new();
-                        let mut extra = serde_json::Map::new();
+                        let mut metadata = crate::json::Map::new();
+                        let mut extra = crate::json::Map::new();
 
                         // Map buttons: extract labels for the frame, urls for metadata.
                         if let Some(buttons) = activity
@@ -146,7 +144,7 @@ impl ServerState {
                         let flags: u64 = if instance { 1 } else { 0 };
 
                         // Merge base fields, activity fields, then extra (buttons).
-                        let mut full = serde_json::Map::new();
+                        let mut full = crate::json::Map::new();
                         full.insert("application_id".to_string(), json!(client_id));
                         full.insert("type".to_string(), json!(0u32));
                         full.insert("metadata".to_string(), Value::Object(metadata));
@@ -174,7 +172,7 @@ impl ServerState {
                             obj.insert("type".to_string(), json!(0u32));
                         }
 
-                        serde_json::to_string(&json!({
+                        crate::json::to_string(&json!({
                             "cmd": msg.cmd,
                             "data": resp_data,
                             "evt": null,
@@ -185,7 +183,7 @@ impl ServerState {
                 }
             }
 
-            "CONNECTIONS_CALLBACK" => serde_json::to_string(&json!({
+            "CONNECTIONS_CALLBACK" => crate::json::to_string(&json!({
                 "cmd": msg.cmd,
                 "data": {"code": 1000},
                 "evt": "ERROR",
@@ -220,7 +218,7 @@ impl Default for ServerState {
     fn default() -> Self {
         let (activity_tx, _) = broadcast::channel(64);
         Self {
-            next_socket_id: AtomicSocketCounter::new(1),
+            next_socket_id: Atomic::new(1),
             activity_tx,
             sockets: RwLock::new(HashMap::new()),
         }
@@ -243,4 +241,3 @@ pub fn maybe_to_ms(ts: i64) -> i64 {
         ts
     }
 }
-

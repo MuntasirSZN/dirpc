@@ -7,41 +7,11 @@
 //! On **big-endian** platforms (s390x, powerpc64be, …) `simd-json` does not
 //! yet support SIMD acceleration so we fall back to `serde_json` instead.
 //! See <https://github.com/simd-lite/simd-json/issues/437>.
-//!
-//! **Serialization always uses `serde_json`** – `simd-json` does not provide a
-//! serializer.
 
-pub use serde_json::{Map, Value, json, to_string};
+pub use serde_json::{Map, Value, from_str, json};
 
-use serde::de::DeserializeOwned;
+#[cfg(target_endian = "little")]
+pub use simd_json::serde::{from_slice, to_string, to_vec};
 
-/// Deserialize from a mutable byte slice.
-///
-/// On little-endian: uses `simd-json`, which modifies the slice in-place.
-/// On big-endian: delegates to `serde_json::from_slice`.
-pub fn from_slice<T: DeserializeOwned>(buf: &mut [u8]) -> anyhow::Result<T> {
-    #[cfg(target_endian = "little")]
-    {
-        simd_json::from_slice(buf).map_err(|e| anyhow::anyhow!("JSON parse error: {e}"))
-    }
-    #[cfg(target_endian = "big")]
-    {
-        serde_json::from_slice(buf).map_err(Into::into)
-    }
-}
-
-/// Deserialize from a string slice.
-///
-/// On little-endian: allocates a temporary mutable buffer so that `simd-json`
-/// can operate in-place. On big-endian: delegates to `serde_json::from_str`.
-pub fn from_str<T: DeserializeOwned>(s: &str) -> anyhow::Result<T> {
-    #[cfg(target_endian = "little")]
-    {
-        let mut buf = s.as_bytes().to_vec();
-        simd_json::from_slice(&mut buf).map_err(|e| anyhow::anyhow!("JSON parse error: {e}"))
-    }
-    #[cfg(target_endian = "big")]
-    {
-        serde_json::from_str(s).map_err(Into::into)
-    }
-}
+#[cfg(target_endian = "big")]
+pub use serde_json::{from_slice, to_string, to_vec};

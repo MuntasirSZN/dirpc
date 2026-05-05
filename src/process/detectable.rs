@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tracing::warn;
@@ -31,8 +31,6 @@ pub struct DetectableEntry {
 const DETECTABLE_URL: &str = "https://discord.com/api/v9/applications/detectable";
 /// Re-fetch the list if the cached file is older than this.
 const CACHE_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60); // 1 week
-/// Embedded fallback used when no cache exists and the network is unreachable.
-const DETECTABLE_JSON_FALLBACK: &str = include_str!("detectable.json");
 
 /// Platform-specific path for the on-disk detectable cache.
 fn cache_path() -> PathBuf {
@@ -46,7 +44,7 @@ fn cache_path() -> PathBuf {
     let base = std::env::var("XDG_CACHE_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
-            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+            let home = std::env::home_dir().unwrap_or_else(|| "/tmp".to_string().into());
             PathBuf::from(home).join(".cache")
         });
 
@@ -63,28 +61,29 @@ async fn cache_is_fresh(path: &PathBuf) -> bool {
         Ok(t) => t,
         Err(_) => return false,
     };
-    SystemTime::now()
-        .duration_since(modified)
-        .map(|age| age < CACHE_TTL)
-        .unwrap_or(false)
+
+    let Ok(modified_ts) = jiff::Timestamp::try_from(modified) else {
+        return false;
+    };
+
+    let Ok(ttl) = jiff::SignedDuration::try_from(CACHE_TTL) else {
+        return false;
+    };
+
+    jiff::Timestamp::now().duration_since(modified_ts) < ttl
 }
 
 /// Fetch the detectable list from Discord's API.
 async fn fetch_detectable() -> anyhow::Result<Vec<DetectableEntry>> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
-        .user_agent(concat!(
-            env!("CARGO_PKG_NAME"),
-            "/",
-            env!("CARGO_PKG_VERSION")
-        ))
+        .user_agent(concat!(clap::crate_name!(), "/", clap::crate_version!()))
         .build()?;
-    let entries = client
-        .get(DETECTABLE_URL)
-        .send()
-        .await?
-        .json::<Vec<DetectableEntry>>()
-        .await?;
+    let bytes = client.get(DETECTABLE_URL).send().await?.bytes().await?;
+    let mut data = bytes.to_vec();
+
+    let entries: Vec<DetectableEntry> = crate::json::from_slice(&mut data)?;
+
     Ok(entries)
 }
 
@@ -101,8 +100,7 @@ pub async fn load_detectable() -> Vec<DetectableEntry> {
     // 1. Fresh cache
     if cache_is_fresh(&path).await {
         if let Ok(data) = tokio::fs::read(&path).await {
-            if let Ok(entries) =
-                crate::json::from_slice::<Vec<DetectableEntry>>(&mut data.clone())
+            if let Ok(entries) = crate::json::from_slice::<Vec<DetectableEntry>>(&mut data.clone())
             {
                 return entries;
             }
@@ -116,7 +114,7 @@ pub async fn load_detectable() -> Vec<DetectableEntry> {
             if let Some(parent) = path.parent() {
                 let _ = tokio::fs::create_dir_all(parent).await;
             }
-            if let Ok(serialised) = serde_json::to_vec(&entries) {
+            if let Ok(serialised) = crate::json::to_vec(&entries) {
                 let _ = tokio::fs::write(&path, serialised).await;
             }
             return entries;
@@ -131,18 +129,6 @@ pub async fn load_detectable() -> Vec<DetectableEntry> {
             return entries;
         }
     }
-
-    // 4. Embedded fallback
-    warn!("Falling back to embedded detectable snapshot");
-    load_detectable_embedded()
-}
-
-/// Parse the embedded compile-time `detectable.json` snapshot.
-///
-/// This is synchronous and always succeeds (panics only on a corrupt build).
-/// Prefer [`load_detectable`] in production code.
-pub fn load_detectable_embedded() -> Vec<DetectableEntry> {
-    serde_json::from_str(DETECTABLE_JSON_FALLBACK).unwrap_or_default()
 }
 
 // ── Path-variant helpers ──────────────────────────────────────────────────────
@@ -231,4 +217,3 @@ pub fn match_process<'a>(
 
     None
 }
-

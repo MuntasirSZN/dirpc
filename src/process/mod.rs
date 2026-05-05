@@ -3,7 +3,7 @@ pub mod detectable;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use serde_json::json;
+use crate::json::json;
 use tracing::{debug, info};
 
 use crate::server::ServerState;
@@ -149,4 +149,3 @@ pub async fn scan_once(
 fn now_ms() -> i64 {
     jiff::Timestamp::now().as_millisecond()
 }
-

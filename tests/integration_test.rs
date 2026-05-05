@@ -2,9 +2,7 @@ use std::sync::Arc;
 
 use dirpc::{
     decode, encode,
-    process::detectable::{
-        load_detectable_embedded, match_process, path_filename, path_variants, strip_64_suffix,
-    },
+    process::detectable::{match_process, path_filename, path_variants, strip_64_suffix},
     server::{READY_PAYLOAD, ServerState, maybe_to_ms},
     types::{ActivityEvent, IpcOpcode, RpcMessage},
     validate_origin,
