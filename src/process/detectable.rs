@@ -40,9 +40,8 @@ fn cache_dir() -> PathBuf {
     let base = std::env::var("XDG_CACHE_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
-            let home = std::env::var("HOME")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|_| "/tmp".into());
+            let home = std::env::home_dir()
+                .unwrap_or_else(|| "/tmp".into());
             home.join(".cache")
         });
 
