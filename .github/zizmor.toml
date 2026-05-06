@@ -1,0 +1,6 @@
+# zizmor configuration
+# https://woodruffw.github.io/zizmor/
+
+[rules]
+# Allow the use of `persist-credentials: false` is not required for all steps.
+unpinned-uses = "audit"

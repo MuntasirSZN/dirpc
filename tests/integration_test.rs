@@ -2,12 +2,49 @@ use std::sync::Arc;
 
 use dirpc::{
     decode, encode,
-    process::detectable::{match_process, path_filename, path_variants, strip_64_suffix},
+    process::detectable::{DetectableEntry, Executable, match_process, path_filename, path_variants, strip_64_suffix},
     server::{READY_PAYLOAD, ServerState, maybe_to_ms},
     types::{ActivityEvent, IpcOpcode, RpcMessage},
     validate_origin,
 };
 use serde_json::{Value, json};
+
+/// Minimal static detectable list for tests that previously relied on an
+/// embedded JSON blob. The entries cover the exact IDs / names asserted below.
+fn load_detectable_embedded() -> Vec<DetectableEntry> {
+    vec![
+        DetectableEntry {
+            id: "359550717720469504".to_string(),
+            name: "Counter-Strike: Global Offensive".to_string(),
+            executables: vec![Executable {
+                name: "csgo".to_string(),
+                is_launcher: false,
+                arguments: None,
+                os: None,
+            }],
+        },
+        DetectableEntry {
+            id: "356869127241924608".to_string(),
+            name: "Overwatch".to_string(),
+            executables: vec![Executable {
+                name: "overwatch.exe".to_string(),
+                is_launcher: false,
+                arguments: None,
+                os: None,
+            }],
+        },
+        DetectableEntry {
+            id: "1073232715901124688".to_string(),
+            name: "Counter-Strike 2".to_string(),
+            executables: vec![Executable {
+                name: "cs2".to_string(),
+                is_launcher: false,
+                arguments: None,
+                os: None,
+            }],
+        },
+    ]
+}
 
 #[test]
 fn test_ipc_encode_decode_roundtrip() {

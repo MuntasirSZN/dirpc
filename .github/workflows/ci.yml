@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  # ── fmt ──────────────────────────────────────────────────────────────────────
+  fmt:
+    name: Rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  # ── clippy ───────────────────────────────────────────────────────────────────
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets --all-features
+
+  # ── nextest ──────────────────────────────────────────────────────────────────
+  nextest:
+    name: Tests (nextest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      - run: cargo nextest run --all-features
+
+  # ── deny ─────────────────────────────────────────────────────────────────────
+  deny:
+    name: cargo-deny (licenses / advisories)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
+  # ── typos ────────────────────────────────────────────────────────────────────
+  typos:
+    name: Typos
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: crate-ci/typos@v1
+
+  # ── committed ────────────────────────────────────────────────────────────────
+  committed:
+    name: Conventional commits
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: crate-ci/committed@master
+        with:
+          args: "--no-merge-commit"
+
+  # ── zizmor ───────────────────────────────────────────────────────────────────
+  zizmor:
+    name: zizmor (workflow security)
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Run zizmor
+        uses: woodruffw/zizmor-action@v1
+        with:
+          config: .github/zizmor.toml
+        continue-on-error: true

@@ -1,0 +1,19 @@
+name: Benchmarks (CodSpeed)
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  benchmarks:
+    name: Run divan benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: CodSpeedHQ/action@v3
+        with:
+          token: ${{ secrets.CODSPEED_TOKEN }}
+          run: cargo bench --bench benchmarks
