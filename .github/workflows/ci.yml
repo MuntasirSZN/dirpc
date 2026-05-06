@@ -10,7 +10,6 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
-  # ── fmt ──────────────────────────────────────────────────────────────────────
   fmt:
     name: Rustfmt
     runs-on: ubuntu-latest
@@ -21,7 +20,6 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all --check
 
-  # ── clippy ───────────────────────────────────────────────────────────────────
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
@@ -33,7 +31,6 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - run: cargo clippy --all-targets --all-features
 
-  # ── nextest ──────────────────────────────────────────────────────────────────
   nextest:
     name: Tests (nextest)
     runs-on: ubuntu-latest
@@ -44,7 +41,6 @@ jobs:
       - uses: taiki-e/install-action@nextest
       - run: cargo nextest run --all-features
 
-  # ── deny ─────────────────────────────────────────────────────────────────────
   deny:
     name: cargo-deny (licenses / advisories)
     runs-on: ubuntu-latest
@@ -52,7 +48,6 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: EmbarkStudios/cargo-deny-action@91bf2b620e09e18d6eb78b92e7861937469acedb # v2.0.17
 
-  # ── typos ────────────────────────────────────────────────────────────────────
   typos:
     name: Typos
     runs-on: ubuntu-latest
@@ -60,7 +55,6 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: crate-ci/typos@bbaefadf97b0ec5fdc942684b647f1a6ab250274 # v1.46.0
 
-  # ── committed ────────────────────────────────────────────────────────────────
   committed:
     name: Conventional commits
     runs-on: ubuntu-latest
@@ -72,7 +66,6 @@ jobs:
         with:
           args: "--no-merge-commit"
 
-  # ── zizmor ───────────────────────────────────────────────────────────────────
   zizmor:
     name: zizmor (workflow security)
     runs-on: ubuntu-latest

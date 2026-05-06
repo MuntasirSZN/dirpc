@@ -40,8 +40,7 @@ fn cache_dir() -> PathBuf {
     let base = std::env::var("XDG_CACHE_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
-            let home = std::env::home_dir()
-                .unwrap_or_else(|| "/tmp".into());
+            let home = std::env::home_dir().unwrap_or_else(|| "/tmp".into());
             home.join(".cache")
         });
 
@@ -221,11 +220,9 @@ pub fn match_process<'a>(
             }
 
             // Check required arguments if specified.
-            if exe
-                .arguments
-                .as_ref()
-                .is_some_and(|required_args| !required_args.iter().all(|ra| args.iter().any(|a| a == ra)))
-            {
+            if exe.arguments.as_ref().is_some_and(|required_args| {
+                !required_args.iter().all(|ra| args.iter().any(|a| a == ra))
+            }) {
                 continue;
             }
 

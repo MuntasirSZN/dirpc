@@ -16,16 +16,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: miri
+      - uses: taiki-e/install-action@nextest
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Run Miri
-        # Run only the pure unit tests (no async I/O, no network) under Miri.
-        # Exclude integration tests that spawn tokio runtimes as Miri does not
-        # fully support them yet.
         run: |
-          cargo miri test \
-            --lib \
-            -- \
-            ipc::tests \
-            process::detectable
+          cargo miri nextest run --all-targets --all-features
         env:
           MIRIFLAGS: "-Zmiri-disable-isolation"

@@ -2,49 +2,15 @@ use std::sync::Arc;
 
 use dirpc::{
     decode, encode,
-    process::detectable::{DetectableEntry, Executable, match_process, path_filename, path_variants, strip_64_suffix},
+    process::detectable::{
+        DetectableEntry, Executable, match_process, path_filename, path_variants, strip_64_suffix,
+    },
+    sample_entries,
     server::{READY_PAYLOAD, ServerState, maybe_to_ms},
     types::{ActivityEvent, IpcOpcode, RpcMessage},
     validate_origin,
 };
 use serde_json::{Value, json};
-
-/// Minimal static detectable list for tests that previously relied on an
-/// embedded JSON blob. The entries cover the exact IDs / names asserted below.
-fn load_detectable_embedded() -> Vec<DetectableEntry> {
-    vec![
-        DetectableEntry {
-            id: "359550717720469504".to_string(),
-            name: "Counter-Strike: Global Offensive".to_string(),
-            executables: vec![Executable {
-                name: "csgo".to_string(),
-                is_launcher: false,
-                arguments: None,
-                os: None,
-            }],
-        },
-        DetectableEntry {
-            id: "356869127241924608".to_string(),
-            name: "Overwatch".to_string(),
-            executables: vec![Executable {
-                name: "overwatch.exe".to_string(),
-                is_launcher: false,
-                arguments: None,
-                os: None,
-            }],
-        },
-        DetectableEntry {
-            id: "1073232715901124688".to_string(),
-            name: "Counter-Strike 2".to_string(),
-            executables: vec![Executable {
-                name: "cs2".to_string(),
-                is_launcher: false,
-                arguments: None,
-                os: None,
-            }],
-        },
-    ]
-}
 
 #[test]
 fn test_ipc_encode_decode_roundtrip() {
@@ -115,6 +81,7 @@ fn test_ipc_opcode_roundtrip() {
 }
 
 #[tokio::test]
+#[cfg(not(miri))]
 async fn test_connections_callback() {
     let (state, _rx) = ServerState::new();
     let state = Arc::new(state);
@@ -138,6 +105,7 @@ async fn test_connections_callback() {
 }
 
 #[tokio::test]
+#[cfg(not(miri))]
 async fn test_set_activity_null_clears_activity() {
     let (state, mut rx) = ServerState::new();
     let state = Arc::new(state);
@@ -167,6 +135,7 @@ async fn test_set_activity_null_clears_activity() {
 }
 
 #[tokio::test]
+#[cfg(not(miri))]
 async fn test_set_activity_with_activity_broadcasts_event() {
     let (state, mut rx) = ServerState::new();
     let state = Arc::new(state);
@@ -204,6 +173,7 @@ async fn test_set_activity_with_activity_broadcasts_event() {
 }
 
 #[tokio::test]
+#[cfg(not(miri))]
 async fn test_set_activity_buttons_are_processed() {
     let (state, mut rx) = ServerState::new();
     let state = Arc::new(state);
@@ -238,6 +208,7 @@ async fn test_set_activity_buttons_are_processed() {
 }
 
 #[tokio::test]
+#[cfg(not(miri))]
 async fn test_set_activity_instance_flag() {
     let (state, mut rx) = ServerState::new();
     let state = Arc::new(state);
@@ -255,6 +226,7 @@ async fn test_set_activity_instance_flag() {
 }
 
 #[tokio::test]
+#[cfg(not(miri))]
 async fn test_set_activity_no_instance_flag() {
     let (state, mut rx) = ServerState::new();
     let state = Arc::new(state);
@@ -272,6 +244,7 @@ async fn test_set_activity_no_instance_flag() {
 }
 
 #[tokio::test]
+#[cfg(not(miri))]
 async fn test_invite_browser_returns_none() {
     let (state, _rx) = ServerState::new();
     let state = Arc::new(state);
@@ -287,6 +260,7 @@ async fn test_invite_browser_returns_none() {
 }
 
 #[tokio::test]
+#[cfg(not(miri))]
 async fn test_guild_template_browser_returns_none() {
     let (state, _rx) = ServerState::new();
     let state = Arc::new(state);
@@ -300,6 +274,7 @@ async fn test_guild_template_browser_returns_none() {
 }
 
 #[tokio::test]
+#[cfg(not(miri))]
 async fn test_deep_link_returns_none() {
     let (state, _rx) = ServerState::new();
     let state = Arc::new(state);
@@ -313,6 +288,7 @@ async fn test_deep_link_returns_none() {
 }
 
 #[tokio::test]
+#[cfg(not(miri))]
 async fn test_unknown_command_returns_none() {
     let (state, _rx) = ServerState::new();
     let state = Arc::new(state);
@@ -326,6 +302,7 @@ async fn test_unknown_command_returns_none() {
 }
 
 #[tokio::test]
+#[cfg(not(miri))]
 async fn test_socket_registration_and_unregistration() {
     let (state, mut rx) = ServerState::new();
     let state = Arc::new(state);
@@ -348,6 +325,7 @@ async fn test_socket_registration_and_unregistration() {
 }
 
 #[tokio::test]
+#[cfg(not(miri))]
 async fn test_socket_id_increments() {
     let (state, _rx) = ServerState::new();
     let id1 = state.next_id();
@@ -382,12 +360,14 @@ fn test_invalid_origins() {
 }
 
 #[tokio::test]
+#[cfg(not(miri))]
 async fn test_bridge_state_new() {
     let bridge = dirpc::bridge::BridgeState::new();
     assert!(bridge.last_msgs.is_empty());
 }
 
 #[tokio::test]
+#[cfg(not(miri))]
 async fn test_bridge_broadcasts_activity() {
     use dirpc::bridge::BridgeState;
 
@@ -405,6 +385,7 @@ async fn test_bridge_broadcasts_activity() {
 }
 
 #[tokio::test]
+#[cfg(not(miri))]
 async fn test_bridge_last_msgs_updated() {
     use dirpc::bridge::BridgeState;
 
@@ -471,7 +452,7 @@ fn test_path_variants_includes_64_cleaned() {
 
 #[test]
 fn test_match_process_found_by_filename() {
-    let entries = load_detectable_embedded();
+    let entries = sample_entries();
     let entry = match_process("/home/user/.steam/csgo", &[], &entries);
     assert!(entry.is_some());
     assert_eq!(entry.unwrap().id, "359550717720469504");
@@ -479,7 +460,7 @@ fn test_match_process_found_by_filename() {
 
 #[test]
 fn test_match_process_found_win_exe() {
-    let entries = load_detectable_embedded();
+    let entries = sample_entries();
     let entry = match_process(r"C:\games\overwatch.exe", &[], &entries);
     assert!(entry.is_some());
     assert_eq!(entry.unwrap().name, "Overwatch");
@@ -487,7 +468,7 @@ fn test_match_process_found_win_exe() {
 
 #[test]
 fn test_match_process_cs2() {
-    let entries = load_detectable_embedded();
+    let entries = sample_entries();
     let entry = match_process("/home/user/.steam/cs2", &[], &entries);
     assert!(entry.is_some());
     assert_eq!(entry.unwrap().id, "1073232715901124688");
@@ -495,7 +476,7 @@ fn test_match_process_cs2() {
 
 #[test]
 fn test_match_process_no_match() {
-    let entries = load_detectable_embedded();
+    let entries = sample_entries();
     let entry = match_process("/usr/bin/notepad", &[], &entries);
     assert!(entry.is_none());
 }
@@ -547,7 +528,7 @@ fn test_match_process_with_required_args() {
 
 #[test]
 fn test_detectable_json_loads() {
-    let entries = load_detectable_embedded();
+    let entries = sample_entries();
     assert!(!entries.is_empty());
 }
 
@@ -568,6 +549,7 @@ fn test_maybe_to_ms_keeps_milliseconds() {
 }
 
 #[test]
+#[cfg(not(miri))]
 fn test_set_activity_timestamp_conversion() {
     // When activity contains a seconds-scale timestamp, it must be converted.
     let rt = tokio::runtime::Runtime::new().unwrap();
