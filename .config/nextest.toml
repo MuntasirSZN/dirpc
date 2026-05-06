@@ -1,0 +1,2 @@
+[profile.ci.default]
+path = "junit.xml"
