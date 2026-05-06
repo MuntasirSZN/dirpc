@@ -15,7 +15,7 @@ fn main() {
 fn sample_entries() -> Vec<dirpc::DetectableEntry> {
     vec![
         dirpc::DetectableEntry {
-            id: "359550982723mukuP".to_string(),
+            id: "359550982723468289".to_string(),
             name: "Counter-Strike: Global Offensive".to_string(),
             executables: vec![dirpc::Executable {
                 name: "csgo".to_string(),
