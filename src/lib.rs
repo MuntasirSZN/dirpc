@@ -15,7 +15,7 @@ pub use transports::ipc::{decode, encode, ipc_path};
 pub use transports::websocket::validate_origin;
 pub use types::{ActivityEvent, Handshake, IpcOpcode, RpcMessage};
 
-#[cfg(any(test, bench))]
+#[cfg(any(test, miri))]
 pub fn sample_entries() -> Vec<DetectableEntry> {
     vec![
         DetectableEntry {
