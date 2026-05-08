@@ -1,7 +1,10 @@
 use dirpc::sample_entries;
+#[cfg(not(miri))]
 use divan::AllocProfiler;
+#[cfg(not(miri))]
 use mimalloc_safe::MiMalloc;
 
+#[cfg(not(miri))]
 #[global_allocator]
 static GLOBAL: AllocProfiler<MiMalloc> = AllocProfiler::new(MiMalloc);
 
