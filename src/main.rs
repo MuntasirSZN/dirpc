@@ -9,8 +9,10 @@ use dirpc::{
     transports::{ipc::start_ipc_server, websocket::start_ws_server},
 };
 
+#[cfg(not(miri))]
 use mimalloc_safe::MiMalloc;
 
+#[cfg(not(miri))]
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
