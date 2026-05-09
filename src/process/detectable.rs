@@ -265,7 +265,7 @@ impl DetectableDb {
 
         let mut builder = fst::SetBuilder::memory();
         for name in &names {
-            builder.insert(name.as_bytes() as &[u8])?;
+            builder.insert(name.as_bytes())?;
         }
         self.fst = builder.into_set();
 
@@ -331,7 +331,7 @@ impl DetectableDb {
                 // Copy into a 16-byte-aligned buffer so rkyv can access the
                 // archive safely (redb mmap pages may not satisfy the archived
                 // root's alignment requirement).
-                let mut aligned = rkyv::util::AlignedVec::<16>::new();
+                let mut aligned = rkyv::util::AlignedVec::<RKYV_ALIGNMENT>::new();
                 aligned.extend_from_slice(bytes);
 
                 if let Ok(archived) =
@@ -350,7 +350,12 @@ impl DetectableDb {
     }
 }
 
-// ─── Helper: empty FST ───────────────────────────────────────────────────────
+/// Alignment required for the rkyv archived root.
+///
+/// rkyv's `access` function requires the buffer to be aligned to at least the
+/// archived struct's alignment.  16 bytes covers all primitive types (including
+/// potential future SIMD fields) without waste.
+const RKYV_ALIGNMENT: usize = 16;
 
 fn empty_fst() -> Set<Vec<u8>> {
     fst::SetBuilder::memory().into_set()
