@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use fst::Set;
-use redb::{Database, TableDefinition};
+use redb::{Database, ReadTransaction, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
@@ -31,13 +31,7 @@ pub struct Executable {
 
 /// A detectable game/application record.
 #[derive(
-    Debug,
-    Clone,
-    Deserialize,
-    Serialize,
-    rkyv::Archive,
-    rkyv::Serialize,
-    rkyv::Deserialize,
+    Debug, Clone, Deserialize, Serialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
 )]
 pub struct DetectableEntry {
     pub id: String,
@@ -75,7 +69,7 @@ fn cache_dir() -> PathBuf {
     base.join("dirpc")
 }
 
-fn cache_db_path() -> PathBuf {
+pub(crate) fn cache_db_path() -> PathBuf {
     cache_dir().join("detectable.redb")
 }
 
@@ -252,7 +246,7 @@ impl DetectableDb {
     /// Reconstruct the in-memory FST from the keys already stored in the exe
     /// table (used when opening an existing database).
     fn load_fst_from_db(&mut self) -> anyhow::Result<()> {
-        let read_txn = self.db.begin_read()?;
+        let read_txn: ReadTransaction = self.db.begin_read()?;
 
         // The table might not exist in a freshly created (but empty) database.
         let exes = match read_txn.open_table(EXES_TABLE) {
@@ -262,13 +256,16 @@ impl DetectableDb {
 
         let mut names: Vec<String> = exes
             .iter()?
-            .filter_map(|r| r.ok().map(|(k, _)| k.value().to_string()))
+            .filter_map(|r| {
+                r.ok()
+                    .map(|(k, _): (redb::AccessGuard<'_, &str>, _)| k.value().to_string())
+            })
             .collect();
         names.sort_unstable();
 
         let mut builder = fst::SetBuilder::memory();
         for name in &names {
-            builder.insert(name.as_bytes())?;
+            builder.insert(name.as_bytes() as &[u8])?;
         }
         self.fst = builder.into_set();
 
@@ -306,7 +303,7 @@ impl DetectableDb {
         }
 
         // ── redb lookup (disk-backed, only on FST hit) ────────────────────────
-        let read_txn = self.db.begin_read().ok()?;
+        let read_txn: ReadTransaction = self.db.begin_read().ok()?;
         let exes = read_txn.open_table(EXES_TABLE).ok()?;
         let apps = read_txn.open_table(APPS_TABLE).ok()?;
 
@@ -317,7 +314,8 @@ impl DetectableDb {
 
         for exe_name in &hit_names {
             if let Ok(Some(guard)) = exes.get(*exe_name) {
-                for id in guard.value().split('\n') {
+                let ids_str: &str = guard.value();
+                for id in ids_str.split('\n') {
                     if seen.insert(id.to_string()) {
                         app_ids.push(id.to_string());
                     }
@@ -328,23 +326,22 @@ impl DetectableDb {
         // Verify each candidate with the full match logic.
         for app_id in &app_ids {
             if let Ok(Some(guard)) = apps.get(app_id.as_str()) {
-                let bytes = guard.value();
+                let bytes: &[u8] = guard.value();
 
-                // Copy into an aligned buffer so rkyv can access the archive
-                // safely (redb mmap pages are not guaranteed to be at the
-                // correct in-page alignment for the archived root).
-                let mut aligned = rkyv::util::AlignedVec::new();
+                // Copy into a 16-byte-aligned buffer so rkyv can access the
+                // archive safely (redb mmap pages may not satisfy the archived
+                // root's alignment requirement).
+                let mut aligned = rkyv::util::AlignedVec::<16>::new();
                 aligned.extend_from_slice(bytes);
 
                 if let Ok(archived) =
                     rkyv::access::<ArchivedDetectableEntry, rkyv::rancor::Error>(&aligned)
+                    && archived_match(archived, path, args)
                 {
-                    if archived_match(archived, path, args) {
-                        return Some((
-                            archived.id.as_str().to_owned(),
-                            archived.name.as_str().to_owned(),
-                        ));
-                    }
+                    return Some((
+                        archived.id.as_str().to_owned(),
+                        archived.name.as_str().to_owned(),
+                    ));
                 }
             }
         }
