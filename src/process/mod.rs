@@ -4,10 +4,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::json::json;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::server::ServerState;
-use detectable::{DetectableEntry, load_detectable, match_process};
+use detectable::{DetectableDb, cache_db_path, load_detectable_entries};
 
 /// Information about a single running process.
 #[derive(Debug, Clone)]
