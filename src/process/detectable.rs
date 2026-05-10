@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use crate::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -221,7 +221,7 @@ impl DetectableDb {
     /// Write `entries` into both redb tables and rebuild the in-memory FST.
     fn ingest_entries(&mut self, entries: &[DetectableEntry]) -> anyhow::Result<()> {
         // exe_name → list of app IDs (preserving insertion order).
-        let mut exe_to_ids: HashMap<String, Vec<String>> = HashMap::new();
+        let mut exe_to_ids: HashMap<String, Vec<String>> = HashMap::default();
 
         let write_txn = self.db.begin_write()?;
         {
@@ -328,14 +328,14 @@ impl DetectableDb {
 
         // Collect all app IDs for the hit exe names, preserving order and
         // deduplicating so each entry is evaluated at most once.
-        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut seen: HashSet<String> = HashSet::default();
         let mut app_ids: Vec<String> = Vec::new();
 
         for exe_name in &hit_names {
             if let Ok(Some(guard)) = exes.get(*exe_name) {
                 let ids_str: &str = guard.value();
                 for id in ids_str.split('\n') {
-                    if seen.insert(id.to_string()) {
+                    if seen.insert_sync(id.to_string()) {
                         app_ids.push(id.to_string());
                     }
                 }

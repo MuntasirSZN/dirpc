@@ -590,8 +590,9 @@ fn temp_redb_path(label: &str) -> std::path::PathBuf {
         // Add a monotonic counter so that helper calls within the same process
         // with the same label still get distinct paths.
         {
-            use std::sync::atomic::{AtomicU64, Ordering};
-            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            use dirpc::Atomic;
+            use std::sync::atomic::Ordering;
+            static COUNTER: Atomic = Atomic::new(0);
             COUNTER.fetch_add(1, Ordering::Relaxed)
         },
         label,

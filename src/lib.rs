@@ -10,10 +10,18 @@ pub use process::detectable::{
     DetectableEntry, Executable, match_process, path_filename, path_variants, strip_64_suffix,
 };
 pub use server::{READY_PAYLOAD, ServerState, maybe_to_ms};
+#[cfg(not(target_pointer_width = "64"))]
+pub use std::sync::atomic::AtomicU32 as Atomic;
+#[cfg(target_pointer_width = "64")]
+pub use std::sync::atomic::AtomicU64 as Atomic;
 pub use transports::ipc::{decode, encode, ipc_path};
 pub use transports::websocket::validate_origin;
 pub use types::{ActivityEvent, Handshake, IpcOpcode, RpcMessage};
 
+pub type HashMap<K, V> = scc::HashMap<K, V, ahash::RandomState>;
+pub type HashSet<K> = scc::HashSet<K, ahash::RandomState>;
+
+#[doc(hidden)]
 pub fn sample_entries() -> Vec<DetectableEntry> {
     vec![
         DetectableEntry {

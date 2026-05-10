@@ -1,6 +1,6 @@
 pub mod detectable;
 
-use std::collections::HashMap;
+use crate::HashMap;
 use std::sync::Arc;
 
 use crate::json::json;
@@ -96,7 +96,7 @@ pub async fn start_process_scanner(state: Arc<ServerState>) {
         }
     };
 
-    let mut active: HashMap<u32, String> = HashMap::new();
+    let mut active: HashMap<u32, String> = HashMap::default();
     let mut last_refresh = std::time::Instant::now();
 
     loop {
@@ -136,12 +136,12 @@ pub async fn scan_once(
 ) {
     let processes = get_process_list().await;
 
-    let mut still_present: HashMap<u32, String> = HashMap::new();
+    let mut still_present: HashMap<u32, String> = HashMap::default();
 
     for proc in &processes {
         let arg_refs: Vec<&str> = proc.args.iter().map(String::as_str).collect();
         if let Some((id, name)) = db.match_process(&proc.path, &arg_refs) {
-            still_present.insert(proc.pid, id.clone());
+            still_present.insert_async(proc.pid, id.clone()).await;
 
             // Newly detected game.
             if !active.contains_key(&proc.pid) {

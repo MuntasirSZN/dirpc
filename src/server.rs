@@ -1,10 +1,7 @@
-use std::collections::HashMap;
+use crate::HashMap;
 use std::sync::Arc;
 
-#[cfg(not(target_pointer_width = "64"))]
-use std::sync::atomic::AtomicU32 as Atomic;
-#[cfg(target_pointer_width = "64")]
-use std::sync::atomic::AtomicU64 as Atomic;
+use crate::Atomic;
 use std::sync::atomic::Ordering;
 
 use crate::json::{Value, json};
@@ -31,7 +28,7 @@ impl ServerState {
         let state = Arc::new(Self {
             next_socket_id: Atomic::new(1),
             activity_tx,
-            sockets: RwLock::new(HashMap::new()),
+            sockets: RwLock::new(HashMap::default()),
         });
         (state, activity_rx)
     }
@@ -50,12 +47,12 @@ impl ServerState {
 
     /// Register a per-socket response sender.
     pub async fn register_socket(&self, socket_id: u64, tx: mpsc::UnboundedSender<String>) {
-        self.sockets.write().insert(socket_id, tx);
+        self.sockets.write().insert_sync(socket_id, tx);
     }
 
     /// Remove a socket and emit a null-activity cleanup event.
     pub async fn unregister_socket(&self, socket_id: u64) {
-        self.sockets.write().remove(&socket_id);
+        self.sockets.write().remove_sync(&socket_id);
         let _ = self.activity_tx.send(ActivityEvent {
             activity: None,
             pid: None,
@@ -220,7 +217,7 @@ impl Default for ServerState {
         Self {
             next_socket_id: Atomic::new(1),
             activity_tx,
-            sockets: RwLock::new(HashMap::new()),
+            sockets: RwLock::new(HashMap::default()),
         }
     }
 }

@@ -38,13 +38,14 @@ tracing-subscriber = { version = "0.3", features = [
   "fmt",
   "parking_lot",
 ] }
-dashmap = "6.1.0"
 parking_lot = "0.12.5"
 anyhow = { version = "1.0.102", features = ["backtrace"] }
 serde_json = "1"
 redb = "4"
 fst = "0.4"
-rkyv = "0.8"
+rkyv = { version = "0.8", features = ["bytes-1"] }
+scc = { version = "3.7.0", features = ["serde"] }
+ahash = "0.8.12"
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 mimalloc-safe = { version = "0.1", default-features = false, features = [
@@ -67,6 +68,10 @@ mimalloc-safe = { version = "0.1", default-features = false, features = [
 
 [target.'cfg(target_endian = "little")'.dependencies]
 simd-json = "0.17"
+rkyv = { version = "0.8", features = ["little_endian"] }
+
+[target.'cfg(target_endian = "big")'.dependencies]
+rkyv = { version = "0.8", features = ["big_endian"] }
 
 [dev-dependencies]
 tokio-test = "0.4"
