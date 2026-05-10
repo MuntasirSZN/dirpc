@@ -12,6 +12,8 @@ fn main() {
     divan::main();
 }
 
+// ─── IPC codec ───────────────────────────────────────────────────────────────
+
 #[divan::bench]
 fn bench_encode_small() -> Vec<u8> {
     dirpc::encode(1, r#"{"cmd":"SET_ACTIVITY","nonce":"abc"}"#)
@@ -28,6 +30,8 @@ fn bench_encode_payload_size(bencher: divan::Bencher, n: usize) {
     let payload = "x".repeat(n);
     bencher.bench(|| dirpc::encode(1, &payload));
 }
+
+// ─── Path helpers ─────────────────────────────────────────────────────────────
 
 #[divan::bench]
 fn bench_path_variants_short() {
@@ -58,6 +62,8 @@ fn bench_path_filename(bencher: divan::Bencher, path: &str) {
     bencher.bench(|| divan::black_box(dirpc::path_filename(path)));
 }
 
+// ─── Linear scan (old path) ───────────────────────────────────────────────────
+
 #[divan::bench]
 fn bench_match_process_hit(bencher: divan::Bencher) {
     let entries = sample_entries();
@@ -81,6 +87,45 @@ fn bench_match_process_miss(bencher: divan::Bencher) {
         ))
     });
 }
+
+// ─── DetectableDb (FST + redb fast path) ─────────────────────────────────────
+
+/// Spin up a one-shot Tokio runtime to call the async `rebuild` helper from
+/// sync benchmark setup code.
+fn build_detectable_db(db_path: &std::path::Path) -> dirpc::process::detectable::DetectableDb {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("build tokio runtime");
+    rt.block_on(dirpc::process::detectable::DetectableDb::rebuild(
+        db_path,
+        &sample_entries(),
+    ))
+    .expect("DetectableDb::rebuild")
+}
+
+#[divan::bench]
+fn bench_detectable_db_match_hit(bencher: divan::Bencher) {
+    let path = std::env::temp_dir().join("dirpc_bench_db_hit.redb");
+    let db = build_detectable_db(&path);
+    bencher.bench(|| divan::black_box(db.match_process("/home/user/.steam/csgo", &[])));
+}
+
+#[divan::bench]
+fn bench_detectable_db_match_miss(bencher: divan::Bencher) {
+    let path = std::env::temp_dir().join("dirpc_bench_db_miss.redb");
+    let db = build_detectable_db(&path);
+    bencher.bench(|| divan::black_box(db.match_process("/usr/bin/definitely-not-a-game", &[])));
+}
+
+#[divan::bench]
+fn bench_detectable_db_match_win_path(bencher: divan::Bencher) {
+    let path = std::env::temp_dir().join("dirpc_bench_db_win.redb");
+    let db = build_detectable_db(&path);
+    bencher.bench(|| divan::black_box(db.match_process(r"C:\games\overwatch.exe", &[])));
+}
+
+// ─── Timestamp helpers ────────────────────────────────────────────────────────
 
 #[divan::bench]
 fn bench_maybe_to_ms_seconds() {
