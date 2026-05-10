@@ -150,11 +150,30 @@ pub(crate) async fn load_detectable_entries() -> Vec<DetectableEntry> {
 
 // ─── DetectableDb ────────────────────────────────────────────────────────────
 
-/// Disk-backed KV store (redb/mmap) plus an in-memory FST for O(|name|) process
-/// membership tests without touching the disk.
+/// Disk-backed KV store (redb/mmap) with a two-level in-memory fast path.
+///
+/// ## Hot-path hierarchy
+///
+/// 1. **FST** (`fst::Set`, O(|name|), pure memory) — membership pre-filter.
+///    Only exe names that appear in the FST proceed to the next level.
+/// 2. **`exe_index`** (`HashMap`, O(1), pure memory) — maps each exe name to
+///    the list of app IDs that declare that executable.  Eliminates the
+///    intermediate `EXES_TABLE` redb lookup that was previously needed.
+/// 3. **redb apps table** (mmap-backed) — only reached when both (1) and (2)
+///    confirm a candidate.  Provides the rkyv-serialised entry for argument
+///    validation.
+///
+/// **Miss path** (the common case in production): FST says "not known" → no
+/// allocation, no HashMap lookup, no disk I/O at all.
 pub struct DetectableDb {
     db: Database,
     fst: Set<Vec<u8>>,
+    /// In-memory exe_name → Vec<app_id>.
+    ///
+    /// Bypasses the `EXES_TABLE` redb round-trip in the hot scan path.
+    /// Populated from `exe_to_ids` during `ingest_entries` and reconstructed
+    /// from the `EXES_TABLE` rows during `open`.
+    exe_index: HashMap<String, Vec<String>>,
 }
 
 impl DetectableDb {
