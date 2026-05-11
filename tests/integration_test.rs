@@ -398,7 +398,7 @@ async fn test_bridge_last_msgs_updated() {
         .insert(2, Arc::from(r#"{"application_id":"def"}"#));
 
     assert_eq!(bridge.last_msgs.len(), 2);
-    let binding = bridge.last_msgs.pin()
+    let binding = bridge.last_msgs.pin();
     let val1 = binding.get(&1).unwrap();
     assert!(val1.contains("abc"));
 }
