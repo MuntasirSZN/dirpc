@@ -97,7 +97,7 @@ where
         return;
     }
 
-    let handshake: Handshake = match serde_json::from_slice(&mut body) {
+    let handshake: Handshake = match serde_json::from_slice(&body) {
         Ok(h) => h,
         Err(e) => {
             warn!("Invalid handshake JSON: {}", e);
@@ -153,7 +153,7 @@ where
                                 let _ = writer.write_all(&pong).await;
                             }
                             Some(IpcOpcode::Frame) => {
-                                match serde_json::from_slice::<crate::types::RpcMessage>(&mut body) {
+                                match serde_json::from_slice::<crate::types::RpcMessage>(&body) {
                                     Ok(msg) => {
                                         if let Some(resp) =
                                             state.handle_message(socket_id, &client_id, &msg).await

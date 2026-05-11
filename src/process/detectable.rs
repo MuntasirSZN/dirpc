@@ -292,13 +292,11 @@ impl DetectableDb {
         let mut names: Vec<String> = Vec::new();
         {
             let pin = self.exe_index.pin();
-            for r in exes.iter()? {
-                if let Ok((k, v)) = r {
-                    let exe_name = k.value().to_string();
-                    let ids: Vec<String> = v.value().split('\n').map(str::to_owned).collect();
-                    pin.insert(exe_name.clone(), ids);
-                    names.push(exe_name);
-                }
+            for (k, v) in exes.iter()?.flatten() {
+                let exe_name = k.value().to_string();
+                let ids: Vec<String> = v.value().split('\n').map(str::to_owned).collect();
+                pin.insert(exe_name.clone(), ids);
+                names.push(exe_name);
             }
         }
         names.sort_unstable();
