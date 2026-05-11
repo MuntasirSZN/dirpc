@@ -1,5 +1,4 @@
 pub mod bridge;
-pub mod json;
 pub mod process;
 pub mod server;
 pub mod transports;
@@ -18,10 +17,8 @@ pub use transports::ipc::{decode, encode, ipc_path};
 pub use transports::websocket::validate_origin;
 pub use types::{ActivityEvent, Handshake, IpcOpcode, RpcMessage};
 
-pub type HashMap<K, V> = scc::HashMap<K, V, ahash::RandomState>;
-pub type HashSet<K> = scc::HashSet<K, ahash::RandomState>;
-/// Concurrent hash-map optimised for read-heavy workloads (papaya + ahash).
-pub type ReadHashMap<K, V> = papaya::HashMap<K, V, ahash::RandomState>;
+pub type HashMap<K, V> = papaya::HashMap<K, V, ahash::RandomState>;
+pub type HashSet<K> = papaya::HashSet<K, ahash::RandomState>;
 
 #[doc(hidden)]
 pub fn sample_entries() -> Vec<DetectableEntry> {

@@ -5,20 +5,20 @@ use serde::{Deserialize, Serialize};
 pub struct RpcMessage {
     pub cmd: String,
     #[serde(default)]
-    pub data: crate::json::Value,
+    pub data: serde_json::Value,
     #[serde(default)]
     pub evt: Option<String>,
     #[serde(default)]
     pub nonce: Option<String>,
     #[serde(default)]
-    pub args: Option<crate::json::Value>,
+    pub args: Option<serde_json::Value>,
 }
 
 impl Default for RpcMessage {
     fn default() -> Self {
         Self {
             cmd: String::new(),
-            data: crate::json::Value::Null,
+            data: serde_json::Value::Null,
             evt: None,
             nonce: None,
             args: None,
@@ -29,7 +29,7 @@ impl Default for RpcMessage {
 /// Activity update emitted by the server towards the bridge.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ActivityEvent {
-    pub activity: Option<crate::json::Value>,
+    pub activity: Option<serde_json::Value>,
     pub pid: Option<u32>,
     pub socket_id: u64,
 }

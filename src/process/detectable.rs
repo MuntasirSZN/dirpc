@@ -1,8 +1,7 @@
-use crate::ReadHashMap;
+use crate::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use ahash::{AHashMap, AHashSet};
 use fst::Set;
 use redb::{Database, ReadTransaction, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
@@ -118,8 +117,7 @@ async fn fetch_detectable(
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
 
-    let mut bytes = resp.bytes().await?.to_vec();
-    let entries: Vec<DetectableEntry> = crate::json::from_slice(&mut bytes)?;
+    let entries = resp.json().await?;
 
     Ok(Some((entries, new_etag)))
 }
@@ -174,7 +172,7 @@ pub struct DetectableDb {
     /// Bypasses the `EXES_TABLE` redb round-trip in the hot scan path.
     /// Populated from `exe_to_ids` during `ingest_entries` and reconstructed
     /// from the `EXES_TABLE` rows during `open`.
-    exe_index: ReadHashMap<String, Vec<String>>,
+    exe_index: HashMap<String, Vec<String>>,
 }
 
 impl DetectableDb {
@@ -184,7 +182,7 @@ impl DetectableDb {
         let mut this = Self {
             db,
             fst: empty_fst(),
-            exe_index: ReadHashMap::default(),
+            exe_index: HashMap::default(),
         };
         this.load_fst_from_db()?;
         Ok(this)
@@ -203,7 +201,7 @@ impl DetectableDb {
         let mut this = Self {
             db,
             fst: empty_fst(),
-            exe_index: ReadHashMap::default(),
+            exe_index: HashMap::default(),
         };
         this.ingest_entries(entries)?;
         Ok(this)
@@ -225,12 +223,11 @@ impl DetectableDb {
     /// and rebuild the in-memory FST.
     fn ingest_entries(&mut self, entries: &[DetectableEntry]) -> anyhow::Result<()> {
         // exe_name → list of app IDs (preserving insertion order).
-        let mut exe_to_ids: AHashMap<String, Vec<String>> = AHashMap::default();
+        let exe_to_ids: HashMap<String, Vec<String>> = HashMap::default();
 
         let write_txn = self.db.begin_write()?;
         {
             let mut apps = write_txn.open_table(APPS_TABLE)?;
-            let mut exes = write_txn.open_table(EXES_TABLE)?;
 
             for entry in entries {
                 // Serialise with rkyv for zero-copy-friendly binary storage.
@@ -239,30 +236,37 @@ impl DetectableDb {
                 apps.insert(entry.id.as_str(), bytes.as_slice())?;
 
                 for exe in &entry.executables {
-                    exe_to_ids
-                        .entry(exe.name.clone())
-                        .or_default()
-                        .push(entry.id.clone());
+                    exe_to_ids.pin().update_or_insert(
+                        exe.name.clone(),
+                        |v| {
+                            let mut new_v = v.clone();
+                            new_v.push(entry.id.clone());
+                            new_v
+                        },
+                        vec![entry.id.clone()],
+                    );
                 }
             }
-
-            for (exe_name, ids) in &exe_to_ids {
-                let joined = ids.join("\n");
-                exes.insert(exe_name.as_str(), joined.as_str())?;
+            let pin_index = self.exe_index.pin();
+            let pin_src = exe_to_ids.pin();
+            for (exe_name, ids) in pin_src.iter() {
+                pin_index.insert(exe_name.clone(), ids.clone());
             }
         }
         write_txn.commit()?;
 
         // Populate the in-memory exe_index (bypasses EXES_TABLE in the hot path).
         {
-            let pin = self.exe_index.pin();
-            for (exe_name, ids) in &exe_to_ids {
-                pin.insert(exe_name.clone(), ids.clone());
+            let pin_dest = self.exe_index.pin();
+            let pin_src = exe_to_ids.pin();
+
+            for (exe_name, ids) in pin_src.iter() {
+                pin_dest.insert(exe_name.clone(), ids.clone());
             }
         }
 
         // Build FST – keys must be inserted in sorted (lexicographic) order.
-        let mut sorted_names: Vec<String> = exe_to_ids.into_keys().collect();
+        let mut sorted_names: Vec<String> = exe_to_ids.pin().keys().cloned().collect();
         sorted_names.sort_unstable();
 
         let mut builder = fst::SetBuilder::memory();
@@ -291,8 +295,7 @@ impl DetectableDb {
             for r in exes.iter()? {
                 if let Ok((k, v)) = r {
                     let exe_name = k.value().to_string();
-                    let ids: Vec<String> =
-                        v.value().split('\n').map(str::to_owned).collect();
+                    let ids: Vec<String> = v.value().split('\n').map(str::to_owned).collect();
                     pin.insert(exe_name.clone(), ids);
                     names.push(exe_name);
                 }
@@ -346,14 +349,14 @@ impl DetectableDb {
         }
 
         // ── exe_index lookup (in-memory HashMap, no disk I/O) ─────────────────
-        let mut seen: AHashSet<String> = AHashSet::default();
+        let seen: HashSet<String> = HashSet::default();
         let mut app_ids: Vec<String> = Vec::new();
         {
             let pin = self.exe_index.pin();
             for exe_name in &hit_names {
                 if let Some(ids) = pin.get(*exe_name) {
                     for id in ids {
-                        if seen.insert(id.clone()) {
+                        if seen.pin().insert(id.clone()) {
                             app_ids.push(id.clone());
                         }
                     }

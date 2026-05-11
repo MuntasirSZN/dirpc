@@ -1,10 +1,10 @@
-use crate::ReadHashMap;
+use crate::HashMap;
 use std::sync::Arc;
 
 use crate::Atomic;
 use std::sync::atomic::Ordering;
 
-use crate::json::{Value, json};
+use serde_json::{Value, json};
 use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, warn};
 
@@ -21,7 +21,7 @@ pub struct ServerState {
     ///
     /// Uses `papaya` (epoch-based, optimised for reads) because every inbound
     /// message triggers a read while socket register/unregister are rare.
-    sockets: ReadHashMap<u64, mpsc::UnboundedSender<String>>,
+    sockets: HashMap<u64, mpsc::UnboundedSender<String>>,
 }
 
 impl ServerState {
@@ -31,7 +31,7 @@ impl ServerState {
         let state = Arc::new(Self {
             next_socket_id: Atomic::new(1),
             activity_tx,
-            sockets: ReadHashMap::default(),
+            sockets: HashMap::default(),
         });
         (state, activity_rx)
     }
@@ -92,7 +92,7 @@ impl ServerState {
                             pid,
                             socket_id,
                         });
-                        crate::json::to_string(&json!({
+                        serde_json::to_string(&json!({
                             "cmd": msg.cmd,
                             "data": null,
                             "evt": null,
@@ -102,8 +102,8 @@ impl ServerState {
                     }
                     Some(raw_activity) => {
                         let mut activity = raw_activity.clone();
-                        let mut metadata = crate::json::Map::new();
-                        let mut extra = crate::json::Map::new();
+                        let mut metadata = serde_json::Map::new();
+                        let mut extra = serde_json::Map::new();
 
                         // Map buttons: extract labels for the frame, urls for metadata.
                         if let Some(buttons) = activity
@@ -143,7 +143,7 @@ impl ServerState {
                         let flags: u64 = if instance { 1 } else { 0 };
 
                         // Merge base fields, activity fields, then extra (buttons).
-                        let mut full = crate::json::Map::new();
+                        let mut full = serde_json::Map::new();
                         full.insert("application_id".to_string(), json!(client_id));
                         full.insert("type".to_string(), json!(0u32));
                         full.insert("metadata".to_string(), Value::Object(metadata));
@@ -171,7 +171,7 @@ impl ServerState {
                             obj.insert("type".to_string(), json!(0u32));
                         }
 
-                        crate::json::to_string(&json!({
+                        serde_json::to_string(&json!({
                             "cmd": msg.cmd,
                             "data": resp_data,
                             "evt": null,
@@ -182,7 +182,7 @@ impl ServerState {
                 }
             }
 
-            "CONNECTIONS_CALLBACK" => crate::json::to_string(&json!({
+            "CONNECTIONS_CALLBACK" => serde_json::to_string(&json!({
                 "cmd": msg.cmd,
                 "data": {"code": 1000},
                 "evt": "ERROR",
@@ -219,7 +219,7 @@ impl Default for ServerState {
         Self {
             next_socket_id: Atomic::new(1),
             activity_tx,
-            sockets: ReadHashMap::default(),
+            sockets: HashMap::default(),
         }
     }
 }

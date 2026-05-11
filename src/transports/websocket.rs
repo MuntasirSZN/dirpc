@@ -185,7 +185,7 @@ async fn handle_connection(stream: TcpStream, state: Arc<ServerState>) -> anyhow
             inbound = reader.next() => {
                 match inbound {
                     Some(Ok(Message::Text(text))) => {
-                        match crate::json::from_str::<RpcMessage>(&text) {
+                        match serde_json::from_slice::<RpcMessage>(&text) {
                             Ok(rpc_msg) => {
                                 if let Some(resp) =
                                     state.handle_message(socket_id, &client_id, &rpc_msg).await

@@ -1,9 +1,9 @@
 pub mod detectable;
 
-use ahash::AHashMap;
+use crate::HashMap;
 use std::sync::Arc;
 
-use crate::json::json;
+use serde_json::json;
 use tracing::{debug, info, warn};
 
 use crate::server::ServerState;
@@ -136,15 +136,15 @@ pub async fn scan_once(
 ) {
     let processes = get_process_list().await;
 
-    let mut still_present: HashMap<u32, String> = HashMap::default();
+    let still_present: HashMap<u32, String> = HashMap::default();
 
     for proc in &processes {
         let arg_refs: Vec<&str> = proc.args.iter().map(String::as_str).collect();
         if let Some((id, name)) = db.match_process(&proc.path, &arg_refs) {
-            still_present.insert_async(proc.pid, id.clone()).await;
+            still_present.pin().insert(proc.pid, id.clone());
 
             // Newly detected game.
-            if !active.contains_key(&proc.pid) {
+            if !active.pin().contains_key(&proc.pid) {
                 debug!("Detected game '{}' (id={}) pid={}", name, id, proc.pid);
                 let activity = json!({
                     "application_id": id,
@@ -166,8 +166,9 @@ pub async fn scan_once(
 
     // Games that disappeared since last scan.
     let lost: Vec<u32> = active
+        .pin()
         .keys()
-        .filter(|pid| !still_present.contains_key(*pid))
+        .filter(|pid| !still_present.pin().contains_key(*pid))
         .copied()
         .collect();
 
@@ -178,7 +179,7 @@ pub async fn scan_once(
             args: Some(json!({ "pid": pid, "activity": null })),
             ..Default::default()
         };
-        let game_id = active.get(&pid).cloned().unwrap_or_default();
+        let game_id = active.pin().get(&pid).cloned().unwrap_or_default();
         state.handle_message(0, &game_id, &msg).await;
     }
 

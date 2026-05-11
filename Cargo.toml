@@ -24,8 +24,8 @@ sockudo-ws = { version = "1.7.4", features = [
 bytes = "1"
 serde = { version = "1", features = ["derive"] }
 jiff = "0.2"
-sysinfo = "0.38"
-reqwest = { version = "0.13", features = ["rustls", "socks"] }
+sysinfo = "0.39"
+reqwest = { version = "0.13", features = ["rustls", "socks", "json"] }
 clap = { version = "4", features = ["derive", "env", "cargo"] }
 clap-verbosity-flag = { version = "3", default-features = false, features = [
   "tracing",
@@ -36,13 +36,11 @@ tracing-subscriber = { version = "0.3", features = [
   "fmt",
   "parking_lot",
 ] }
-parking_lot = "0.12.5"
 anyhow = { version = "1.0.102", features = ["backtrace"] }
 serde_json = "1"
 redb = "4"
 fst = "0.4"
 rkyv = { version = "0.8", features = ["bytes-1"] }
-scc = { version = "3.7.0", features = ["serde"] }
 papaya = "0.2"
 ahash = "0.8.12"
 
@@ -66,7 +64,6 @@ mimalloc-safe = { version = "0.1", default-features = false, features = [
 ] }
 
 [target.'cfg(target_endian = "little")'.dependencies]
-simd-json = "0.17"
 rkyv = { version = "0.8", features = ["little_endian"] }
 
 [target.'cfg(target_endian = "big")'.dependencies]

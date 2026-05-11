@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::ReadHashMap;
+use crate::HashMap;
 use bytes::BytesMut;
 use sockudo_ws::handshake::{build_response, generate_accept_key, parse_request};
 use sockudo_ws::protocol::Message;
@@ -13,7 +13,7 @@ use tracing::{debug, info, warn};
 use crate::types::ActivityEvent;
 
 /// socket_id -> serialized JSON
-type LastMsgs = Arc<ReadHashMap<u64, Arc<str>>>;
+type LastMsgs = Arc<HashMap<u64, Arc<str>>>;
 
 pub struct BridgeState {
     pub last_msgs: LastMsgs,
@@ -24,7 +24,7 @@ impl BridgeState {
     pub fn new() -> Self {
         let (tx, _) = broadcast::channel(256);
         Self {
-            last_msgs: Arc::new(ReadHashMap::default()),
+            last_msgs: Arc::new(HashMap::default()),
             tx,
         }
     }
@@ -55,7 +55,7 @@ pub async fn start_bridge(
                             state_feed.last_msgs.pin().remove(&key);
                         }
                         Some(v) => {
-                            let json = match crate::json::to_string(v) {
+                            let json = match serde_json::to_string(v) {
                                 Ok(s) => Arc::<str>::from(s),
                                 Err(_) => continue,
                             };
