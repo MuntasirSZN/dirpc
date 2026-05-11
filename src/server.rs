@@ -1,11 +1,10 @@
-use crate::HashMap;
+use crate::ReadHashMap;
 use std::sync::Arc;
 
 use crate::Atomic;
 use std::sync::atomic::Ordering;
 
 use crate::json::{Value, json};
-use parking_lot::RwLock;
 use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, warn};
 
@@ -18,7 +17,11 @@ pub const READY_PAYLOAD: &str = r#"{"cmd":"DISPATCH","data":{"v":1,"config":{"cd
 pub struct ServerState {
     pub next_socket_id: Atomic,
     pub activity_tx: broadcast::Sender<ActivityEvent>,
-    sockets: RwLock<HashMap<u64, mpsc::UnboundedSender<String>>>,
+    /// Read-heavy concurrent map: socket_id → per-socket response sender.
+    ///
+    /// Uses `papaya` (epoch-based, optimised for reads) because every inbound
+    /// message triggers a read while socket register/unregister are rare.
+    sockets: ReadHashMap<u64, mpsc::UnboundedSender<String>>,
 }
 
 impl ServerState {
@@ -28,7 +31,7 @@ impl ServerState {
         let state = Arc::new(Self {
             next_socket_id: Atomic::new(1),
             activity_tx,
-            sockets: RwLock::new(HashMap::default()),
+            sockets: ReadHashMap::default(),
         });
         (state, activity_rx)
     }
@@ -47,12 +50,12 @@ impl ServerState {
 
     /// Register a per-socket response sender.
     pub async fn register_socket(&self, socket_id: u64, tx: mpsc::UnboundedSender<String>) {
-        self.sockets.write().insert_sync(socket_id, tx);
+        self.sockets.pin().insert(socket_id, tx);
     }
 
     /// Remove a socket and emit a null-activity cleanup event.
     pub async fn unregister_socket(&self, socket_id: u64) {
-        self.sockets.write().remove_sync(&socket_id);
+        self.sockets.pin().remove(&socket_id);
         let _ = self.activity_tx.send(ActivityEvent {
             activity: None,
             pid: None,
@@ -62,8 +65,7 @@ impl ServerState {
 
     /// Forward a text frame to a specific socket.
     pub async fn send_to_socket(&self, socket_id: u64, msg: String) {
-        let sockets = self.sockets.read();
-        if let Some(tx) = sockets.get(&socket_id) {
+        if let Some(tx) = self.sockets.pin().get(&socket_id) {
             let _ = tx.send(msg);
         }
     }
@@ -217,7 +219,7 @@ impl Default for ServerState {
         Self {
             next_socket_id: Atomic::new(1),
             activity_tx,
-            sockets: RwLock::new(HashMap::default()),
+            sockets: ReadHashMap::default(),
         }
     }
 }

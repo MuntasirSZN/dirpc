@@ -16,9 +16,7 @@ tokio = { version = "1.52", features = [
   "io-util",
   "parking_lot",
 ] }
-axum = { version = "0.8.9", features = ["macros", "http2"] }
 sockudo-ws = { version = "1.7.4", features = [
-  "axum-integration",
   "permessage-deflate",
   "simd",
   "tokio-runtime",
@@ -45,6 +43,7 @@ redb = "4"
 fst = "0.4"
 rkyv = { version = "0.8", features = ["bytes-1"] }
 scc = { version = "3.7.0", features = ["serde"] }
+papaya = "0.2"
 ahash = "0.8.12"
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]

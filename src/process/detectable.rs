@@ -1,7 +1,8 @@
-use crate::{HashMap, HashSet};
+use crate::ReadHashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use ahash::{AHashMap, AHashSet};
 use fst::Set;
 use redb::{Database, ReadTransaction, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
@@ -173,7 +174,7 @@ pub struct DetectableDb {
     /// Bypasses the `EXES_TABLE` redb round-trip in the hot scan path.
     /// Populated from `exe_to_ids` during `ingest_entries` and reconstructed
     /// from the `EXES_TABLE` rows during `open`.
-    exe_index: HashMap<String, Vec<String>>,
+    exe_index: ReadHashMap<String, Vec<String>>,
 }
 
 impl DetectableDb {
@@ -183,6 +184,7 @@ impl DetectableDb {
         let mut this = Self {
             db,
             fst: empty_fst(),
+            exe_index: ReadHashMap::default(),
         };
         this.load_fst_from_db()?;
         Ok(this)
@@ -201,6 +203,7 @@ impl DetectableDb {
         let mut this = Self {
             db,
             fst: empty_fst(),
+            exe_index: ReadHashMap::default(),
         };
         this.ingest_entries(entries)?;
         Ok(this)
@@ -218,10 +221,11 @@ impl DetectableDb {
 
     // ── internals ─────────────────────────────────────────────────────────────
 
-    /// Write `entries` into both redb tables and rebuild the in-memory FST.
+    /// Write `entries` into both redb tables, populate the in-memory exe_index,
+    /// and rebuild the in-memory FST.
     fn ingest_entries(&mut self, entries: &[DetectableEntry]) -> anyhow::Result<()> {
         // exe_name → list of app IDs (preserving insertion order).
-        let mut exe_to_ids: HashMap<String, Vec<String>> = HashMap::default();
+        let mut exe_to_ids: AHashMap<String, Vec<String>> = AHashMap::default();
 
         let write_txn = self.db.begin_write()?;
         {
@@ -249,6 +253,14 @@ impl DetectableDb {
         }
         write_txn.commit()?;
 
+        // Populate the in-memory exe_index (bypasses EXES_TABLE in the hot path).
+        {
+            let pin = self.exe_index.pin();
+            for (exe_name, ids) in &exe_to_ids {
+                pin.insert(exe_name.clone(), ids.clone());
+            }
+        }
+
         // Build FST – keys must be inserted in sorted (lexicographic) order.
         let mut sorted_names: Vec<String> = exe_to_ids.into_keys().collect();
         sorted_names.sort_unstable();
@@ -262,8 +274,8 @@ impl DetectableDb {
         Ok(())
     }
 
-    /// Reconstruct the in-memory FST from the keys already stored in the exe
-    /// table (used when opening an existing database).
+    /// Reconstruct the in-memory FST and exe_index from the keys already stored
+    /// in the exe table (used when opening an existing database).
     fn load_fst_from_db(&mut self) -> anyhow::Result<()> {
         let read_txn: ReadTransaction = self.db.begin_read()?;
 
@@ -273,13 +285,19 @@ impl DetectableDb {
             Err(_) => return Ok(()),
         };
 
-        let mut names: Vec<String> = exes
-            .iter()?
-            .filter_map(|r| {
-                r.ok()
-                    .map(|(k, _): (redb::AccessGuard<'_, &str>, _)| k.value().to_string())
-            })
-            .collect();
+        let mut names: Vec<String> = Vec::new();
+        {
+            let pin = self.exe_index.pin();
+            for r in exes.iter()? {
+                if let Ok((k, v)) = r {
+                    let exe_name = k.value().to_string();
+                    let ids: Vec<String> =
+                        v.value().split('\n').map(str::to_owned).collect();
+                    pin.insert(exe_name.clone(), ids);
+                    names.push(exe_name);
+                }
+            }
+        }
         names.sort_unstable();
 
         let mut builder = fst::SetBuilder::memory();
@@ -296,8 +314,14 @@ impl DetectableDb {
     /// Return `(id, name)` of the first detectable entry that matches `path`
     /// and `args`, or `None` if no match is found.
     ///
-    /// **Fast path**: checks the in-memory FST first.  Only processes whose exe
-    /// name appears in the FST ever touch the mmap-backed redb database.
+    /// ## Hot-path hierarchy
+    ///
+    /// 1. **FST** — O(|name|) membership check, pure memory.  
+    ///    Miss path: returns `None` immediately with no allocation or disk I/O.
+    /// 2. **`exe_index`** — O(1) `papaya::HashMap` lookup, pure memory.  
+    ///    Yields the candidate app IDs without touching redb at all.
+    /// 3. **redb `apps` table** — mmap-backed, only reached for confirmed hits.  
+    ///    Provides the rkyv-serialised entry for argument validation.
     pub fn match_process(&self, path: &str, args: &[&str]) -> Option<(String, String)> {
         let variants = path_variants(path);
         let filename = path_filename(path);
@@ -321,26 +345,29 @@ impl DetectableDb {
             return None;
         }
 
-        // ── redb lookup (disk-backed, only on FST hit) ────────────────────────
-        let read_txn: ReadTransaction = self.db.begin_read().ok()?;
-        let exes = read_txn.open_table(EXES_TABLE).ok()?;
-        let apps = read_txn.open_table(APPS_TABLE).ok()?;
-
-        // Collect all app IDs for the hit exe names, preserving order and
-        // deduplicating so each entry is evaluated at most once.
-        let mut seen: HashSet<String> = HashSet::default();
+        // ── exe_index lookup (in-memory HashMap, no disk I/O) ─────────────────
+        let mut seen: AHashSet<String> = AHashSet::default();
         let mut app_ids: Vec<String> = Vec::new();
-
-        for exe_name in &hit_names {
-            if let Ok(Some(guard)) = exes.get(*exe_name) {
-                let ids_str: &str = guard.value();
-                for id in ids_str.split('\n') {
-                    if seen.insert_sync(id.to_string()) {
-                        app_ids.push(id.to_string());
+        {
+            let pin = self.exe_index.pin();
+            for exe_name in &hit_names {
+                if let Some(ids) = pin.get(*exe_name) {
+                    for id in ids {
+                        if seen.insert(id.clone()) {
+                            app_ids.push(id.clone());
+                        }
                     }
                 }
             }
         }
+
+        if app_ids.is_empty() {
+            return None;
+        }
+
+        // ── redb APPS_TABLE lookup (disk-backed, only on confirmed hits) ──────
+        let read_txn: ReadTransaction = self.db.begin_read().ok()?;
+        let apps = read_txn.open_table(APPS_TABLE).ok()?;
 
         // Verify each candidate with the full match logic.
         for app_id in &app_ids {

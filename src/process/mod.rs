@@ -1,6 +1,6 @@
 pub mod detectable;
 
-use crate::HashMap;
+use ahash::AHashMap;
 use std::sync::Arc;
 
 use crate::json::json;

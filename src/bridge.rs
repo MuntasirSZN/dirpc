@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::HashMap;
+use crate::ReadHashMap;
 use bytes::BytesMut;
 use sockudo_ws::handshake::{build_response, generate_accept_key, parse_request};
 use sockudo_ws::protocol::Message;
@@ -13,7 +13,7 @@ use tracing::{debug, info, warn};
 use crate::types::ActivityEvent;
 
 /// socket_id -> serialized JSON
-type LastMsgs = Arc<HashMap<u64, Arc<str>>>;
+type LastMsgs = Arc<ReadHashMap<u64, Arc<str>>>;
 
 pub struct BridgeState {
     pub last_msgs: LastMsgs,
@@ -24,7 +24,7 @@ impl BridgeState {
     pub fn new() -> Self {
         let (tx, _) = broadcast::channel(256);
         Self {
-            last_msgs: Arc::new(HashMap::default()),
+            last_msgs: Arc::new(ReadHashMap::default()),
             tx,
         }
     }
@@ -52,7 +52,7 @@ pub async fn start_bridge(
 
                     match &event.activity {
                         None => {
-                            state_feed.last_msgs.remove_async(&key).await;
+                            state_feed.last_msgs.pin().remove(&key);
                         }
                         Some(v) => {
                             let json = match crate::json::to_string(v) {
@@ -60,7 +60,7 @@ pub async fn start_bridge(
                                 Err(_) => continue,
                             };
 
-                            state_feed.last_msgs.insert_async(key, json.clone()).await;
+                            state_feed.last_msgs.pin().insert(key, json.clone());
                             let _ = state_feed.tx.send(json);
                         }
                     }
@@ -120,8 +120,13 @@ async fn handle_client(stream: TcpStream, state: Arc<BridgeState>) -> anyhow::Re
     let mut rx = state.tx.subscribe();
 
     // Catch-up snapshot: send all last known activity payloads to the new client.
-    for entry in state.last_msgs.iter() {
-        let payload = entry.value().clone();
+    let snapshot: Vec<Arc<str>> = state
+        .last_msgs
+        .pin()
+        .iter()
+        .map(|(_, v)| v.clone())
+        .collect();
+    for payload in snapshot {
         writer.send(Message::text(&*payload)).await?;
     }
 
