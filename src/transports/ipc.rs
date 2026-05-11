@@ -84,7 +84,7 @@ where
     W: AsyncWriteExt + Unpin,
 {
     // ── Step 1: expect HANDSHAKE ───────────────────────────────────────────
-    let (opcode, mut body) = match read_frame(&mut reader).await {
+    let (opcode, body) = match read_frame(&mut reader).await {
         Ok(f) => f,
         Err(e) => {
             debug!("IPC read error during handshake: {}", e);
@@ -146,7 +146,7 @@ where
             // Inbound: read next frame from client.
             result = read_frame(&mut reader) => {
                 match result {
-                    Ok((op, mut body)) => {
+                    Ok((op, body)) => {
                         match IpcOpcode::from_i32(op) {
                             Some(IpcOpcode::Ping) => {
                                 let pong = encode(IpcOpcode::Pong as i32, "");
