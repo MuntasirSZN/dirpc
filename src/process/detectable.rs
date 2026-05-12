@@ -262,7 +262,7 @@ impl DetectableDb {
         }
 
         // Build FST – keys must be inserted in sorted (lexicographic) order.
-        let mut sorted_names: Vec<&String> = exe_to_ids.keys().collect();
+        let mut sorted_names: Vec<String> = exe_to_ids.keys().cloned().collect();
         sorted_names.sort_unstable();
 
         let mut builder = fst::SetBuilder::memory();
@@ -289,8 +289,6 @@ impl DetectableDb {
         {
             let pin = self.exe_index.pin();
             for (k, v) in exes.iter()?.flatten() {
-                let k: redb::AccessGuard<&str> = k;
-                let v: redb::AccessGuard<&str> = v;
                 let exe_name = k.value().to_string();
                 let ids: Vec<String> = v.value().split('\n').map(str::to_owned).collect();
                 pin.insert(exe_name.clone(), ids);
@@ -371,7 +369,6 @@ impl DetectableDb {
         // Verify each candidate with the full match logic.
         for app_id in &app_ids {
             if let Ok(Some(guard)) = apps.get(app_id.as_str()) {
-                let guard: redb::AccessGuard<&[u8]> = guard;
                 let bytes: &[u8] = guard.value();
 
                 // Copy into a 16-byte-aligned buffer so rkyv can access the
