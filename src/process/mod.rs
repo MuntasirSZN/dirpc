@@ -1,13 +1,13 @@
 pub mod detectable;
 
-use std::collections::HashMap;
+use ahash::AHashMap;
 use std::sync::Arc;
 
-use crate::json::json;
-use tracing::{debug, info};
+use serde_json::json;
+use tracing::{debug, info, warn};
 
 use crate::server::ServerState;
-use detectable::{DetectableEntry, load_detectable, match_process};
+use detectable::{DetectableDb, cache_db_path, load_detectable_entries};
 
 /// Information about a single running process.
 #[derive(Debug, Clone)]
@@ -55,56 +55,101 @@ pub async fn get_process_list() -> Vec<ProcessInfo> {
 /// Run the process scanner loop: every 5 seconds scan running processes and
 /// emit `SET_ACTIVITY` events for newly detected or lost games.
 ///
-/// The detectable-apps list is loaded once at startup (from cache or network)
-/// and refreshed weekly in the background.
+/// ## Startup
+/// 1. Try to open an existing `redb` file; if it is populated, skip a network
+///    round-trip entirely (the mmap-backed database is already on disk).
+/// 2. Otherwise fetch the Discord detectable list, write it into redb, and
+///    build the in-memory FST.
+///
+/// ## Refresh
+/// Once per week the list is re-fetched.  A 304 Not-Modified response leaves
+/// the existing database untouched.
 pub async fn start_process_scanner(state: Arc<ServerState>) {
-    let mut entries = load_detectable().await;
-    let mut active: HashMap<u32, String> = HashMap::new();
-    let mut last_refresh = std::time::Instant::now();
+    let db_path = cache_db_path();
 
-    info!(
-        "Process scanner started ({} detectable entries)",
-        entries.len()
-    );
+    // ── Initial load ─────────────────────────────────────────────────────────
+    let mut db = match DetectableDb::open(&db_path) {
+        Ok(d) if !d.is_empty() => {
+            info!(
+                "Process scanner started (redb open, {} exe names in FST)",
+                d.fst_len()
+            );
+            d
+        }
+        _ => {
+            info!("Building detectable database from Discord API…");
+            let entries = load_detectable_entries().await;
+            match DetectableDb::rebuild(&db_path, &entries).await {
+                Ok(d) => {
+                    info!(
+                        "Process scanner started ({} entries, {} exe names in FST)",
+                        entries.len(),
+                        d.fst_len()
+                    );
+                    d
+                }
+                Err(e) => {
+                    warn!("Failed to build detectable database: {e}; game detection disabled");
+                    return;
+                }
+            }
+        }
+    };
+
+    // pid → app_id for currently-active games.
+    let mut active: AHashMap<u32, String> = AHashMap::default();
+    let mut last_refresh = std::time::Instant::now();
 
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
-        // Refresh the detectable list once per week.
+        // ── Weekly refresh ───────────────────────────────────────────────────
         if last_refresh.elapsed().as_secs() > 7 * 24 * 3600 {
-            entries = load_detectable().await;
+            let entries = load_detectable_entries().await;
+            if entries.is_empty() {
+                // 304 Not-Modified or network error: keep using the existing db.
+                debug!("Detectable list unchanged (304 or network error); keeping existing db");
+            } else {
+                match DetectableDb::rebuild(&db_path, &entries).await {
+                    Ok(new_db) => {
+                        info!(
+                            "Refreshed detectable database ({} entries, {} exe names in FST)",
+                            entries.len(),
+                            new_db.fst_len()
+                        );
+                        db = new_db;
+                    }
+                    Err(e) => warn!("Failed to refresh detectable database: {e}"),
+                }
+            }
             last_refresh = std::time::Instant::now();
-            info!("Refreshed detectable list ({} entries)", entries.len());
         }
 
-        scan_once(&state, &entries, &mut active).await;
+        scan_once(&state, &db, &mut active).await;
     }
 }
 
 /// Single scan iteration (exposed for testing).
 pub async fn scan_once(
     state: &Arc<ServerState>,
-    entries: &[DetectableEntry],
-    active: &mut HashMap<u32, String>,
+    db: &DetectableDb,
+    active: &mut AHashMap<u32, String>,
 ) {
     let processes = get_process_list().await;
 
-    let mut still_present: HashMap<u32, String> = HashMap::new();
+    let mut still_present: AHashMap<u32, String> = AHashMap::default();
 
     for proc in &processes {
         let arg_refs: Vec<&str> = proc.args.iter().map(String::as_str).collect();
-        if let Some(entry) = match_process(&proc.path, &arg_refs, entries) {
-            still_present.insert(proc.pid, entry.id.clone());
+        if let Some((id, name)) = db.match_process(&proc.path, &arg_refs) {
+            still_present.insert(proc.pid, id.clone());
 
             // Newly detected game.
             if !active.contains_key(&proc.pid) {
-                debug!(
-                    "Detected game '{}' (id={}) pid={}",
-                    entry.name, entry.id, proc.pid
-                );
+                debug!("Detected game '{}' (id={}) pid={}", name, id, proc.pid);
                 let activity = json!({
-                    "application_id": entry.id,
-                    "name": entry.name,
+                    "application_id": id,
+                    "name": name,
                     "timestamps": {"start": now_ms()},
                 });
                 let msg = crate::types::RpcMessage {
@@ -115,7 +160,7 @@ pub async fn scan_once(
                     })),
                     ..Default::default()
                 };
-                state.handle_message(0, &entry.id, &msg).await;
+                state.handle_message(0, &id, &msg).await;
             }
         }
     }

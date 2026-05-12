@@ -390,13 +390,16 @@ async fn test_bridge_last_msgs_updated() {
     let bridge = Arc::new(BridgeState::new());
     bridge
         .last_msgs
+        .pin()
         .insert(1, Arc::from(r#"{"application_id":"abc"}"#));
     bridge
         .last_msgs
+        .pin()
         .insert(2, Arc::from(r#"{"application_id":"def"}"#));
 
     assert_eq!(bridge.last_msgs.len(), 2);
-    let val1 = bridge.last_msgs.get(&1).unwrap();
+    let binding = bridge.last_msgs.pin();
+    let val1 = binding.get(&1).unwrap();
     assert!(val1.contains("abc"));
 }
 
@@ -576,4 +579,197 @@ fn test_ipc_path_contains_index() {
     let path = ipc_path(3);
     let s = path.to_string_lossy();
     assert!(s.contains("discord-ipc-3"), "unexpected path: {}", s);
+}
+
+// ─── DetectableDb integration tests ──────────────────────────────────────────
+
+/// Return a path inside the OS temp dir that is unique to this test binary run
+/// and the given label.  Using process ID + label avoids collisions between
+/// concurrent test processes while keeping paths readable.
+fn temp_redb_path(label: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "dirpc_test_{}_{}_{}.redb",
+        std::process::id(),
+        // Add a monotonic counter so that helper calls within the same process
+        // with the same label still get distinct paths.
+        {
+            use dirpc::Atomic;
+            use std::sync::atomic::Ordering;
+            static COUNTER: Atomic = Atomic::new(0);
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        },
+        label,
+    ))
+}
+
+#[tokio::test]
+#[cfg(not(miri))]
+async fn test_detectable_db_empty_rebuild_is_empty() {
+    use dirpc::process::detectable::DetectableDb;
+    let path = temp_redb_path("empty");
+    let db = DetectableDb::rebuild(&path, &[]).await.unwrap();
+    assert!(db.is_empty());
+    assert_eq!(db.fst_len(), 0);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+#[cfg(not(miri))]
+async fn test_detectable_db_rebuild_has_correct_fst_len() {
+    use dirpc::process::detectable::DetectableDb;
+    let path = temp_redb_path("fst_len");
+    let entries = sample_entries();
+    let db = DetectableDb::rebuild(&path, &entries).await.unwrap();
+    assert!(!db.is_empty());
+    // sample_entries() has 3 unique executable names: csgo, overwatch.exe, cs2
+    assert_eq!(db.fst_len(), 3);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+#[cfg(not(miri))]
+async fn test_detectable_db_match_process_hit() {
+    use dirpc::process::detectable::DetectableDb;
+    let path = temp_redb_path("hit");
+    let db = DetectableDb::rebuild(&path, &sample_entries())
+        .await
+        .unwrap();
+    let result = db.match_process("/home/user/.steam/csgo", &[]);
+    assert!(result.is_some());
+    let (id, name) = result.unwrap();
+    assert_eq!(id, "359550717720469504");
+    assert_eq!(name, "Counter-Strike: Global Offensive");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+#[cfg(not(miri))]
+async fn test_detectable_db_match_process_miss() {
+    use dirpc::process::detectable::DetectableDb;
+    let path = temp_redb_path("miss");
+    let db = DetectableDb::rebuild(&path, &sample_entries())
+        .await
+        .unwrap();
+    assert!(db.match_process("/usr/bin/notepad", &[]).is_none());
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+#[cfg(not(miri))]
+async fn test_detectable_db_match_windows_path() {
+    use dirpc::process::detectable::DetectableDb;
+    let path = temp_redb_path("win");
+    let db = DetectableDb::rebuild(&path, &sample_entries())
+        .await
+        .unwrap();
+    let result = db.match_process(r"C:\games\overwatch.exe", &[]);
+    assert!(result.is_some());
+    let (_, name) = result.unwrap();
+    assert_eq!(name, "Overwatch");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+#[cfg(not(miri))]
+async fn test_detectable_db_match_cs2() {
+    use dirpc::process::detectable::DetectableDb;
+    let path = temp_redb_path("cs2");
+    let db = DetectableDb::rebuild(&path, &sample_entries())
+        .await
+        .unwrap();
+    let result = db.match_process("/home/user/.steam/cs2", &[]);
+    assert!(result.is_some());
+    let (id, _) = result.unwrap();
+    assert_eq!(id, "1073232715901124688");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+#[cfg(not(miri))]
+async fn test_detectable_db_open_existing() {
+    use dirpc::process::detectable::DetectableDb;
+    let path = temp_redb_path("open");
+    // Build and immediately drop (closes the file handles).
+    {
+        DetectableDb::rebuild(&path, &sample_entries())
+            .await
+            .unwrap();
+    }
+    // Re-open the existing file – FST must be reconstructed and matches must work.
+    let db = DetectableDb::open(&path).unwrap();
+    assert!(!db.is_empty());
+    assert_eq!(db.fst_len(), 3);
+    assert!(db.match_process("/home/user/.steam/csgo", &[]).is_some());
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+#[cfg(not(miri))]
+async fn test_detectable_db_match_exact_filename_prefix() {
+    use dirpc::process::detectable::{DetectableDb, DetectableEntry, Executable};
+    let path = temp_redb_path("exact");
+    let entries = vec![DetectableEntry {
+        id: "exact_id".to_string(),
+        name: "ExactGame".to_string(),
+        executables: vec![Executable {
+            name: ">exactgame".to_string(),
+            is_launcher: false,
+            arguments: None,
+            os: None,
+        }],
+    }];
+    let db = DetectableDb::rebuild(&path, &entries).await.unwrap();
+    // Any path whose final component is "exactgame" should match.
+    assert!(db.match_process("/opt/exactgame", &[]).is_some());
+    assert!(db.match_process("/opt/other/exactgame", &[]).is_some());
+    // A different filename must not match.
+    assert!(db.match_process("/opt/notexactgame", &[]).is_none());
+    assert!(db.match_process("/opt/exactgame2", &[]).is_none());
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+#[cfg(not(miri))]
+async fn test_detectable_db_match_required_args() {
+    use dirpc::process::detectable::{DetectableDb, DetectableEntry, Executable};
+    let path = temp_redb_path("args");
+    let entries = vec![DetectableEntry {
+        id: "arg_id".to_string(),
+        name: "ArgGame".to_string(),
+        executables: vec![Executable {
+            name: "launcher".to_string(),
+            is_launcher: true,
+            arguments: Some(vec!["--game=mygame".to_string()]),
+            os: None,
+        }],
+    }];
+    let db = DetectableDb::rebuild(&path, &entries).await.unwrap();
+    // Without required arg → no match.
+    assert!(db.match_process("/usr/bin/launcher", &[]).is_none());
+    // With required arg → match.
+    assert!(
+        db.match_process("/usr/bin/launcher", &["--game=mygame"])
+            .is_some()
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+#[cfg(not(miri))]
+async fn test_detectable_db_rebuild_is_idempotent() {
+    use dirpc::process::detectable::DetectableDb;
+    let path = temp_redb_path("idempotent");
+    // First build.
+    let db1 = DetectableDb::rebuild(&path, &sample_entries())
+        .await
+        .unwrap();
+    let len1 = db1.fst_len();
+    drop(db1);
+    // Rebuild with the same entries – must overwrite the old file cleanly.
+    let db2 = DetectableDb::rebuild(&path, &sample_entries())
+        .await
+        .unwrap();
+    assert_eq!(db2.fst_len(), len1);
+    assert!(db2.match_process("/home/user/.steam/csgo", &[]).is_some());
+    let _ = std::fs::remove_file(&path);
 }

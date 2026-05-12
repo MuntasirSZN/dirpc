@@ -84,7 +84,7 @@ where
     W: AsyncWriteExt + Unpin,
 {
     // ── Step 1: expect HANDSHAKE ───────────────────────────────────────────
-    let (opcode, mut body) = match read_frame(&mut reader).await {
+    let (opcode, body) = match read_frame(&mut reader).await {
         Ok(f) => f,
         Err(e) => {
             debug!("IPC read error during handshake: {}", e);
@@ -97,7 +97,7 @@ where
         return;
     }
 
-    let handshake: Handshake = match crate::json::from_slice(&mut body) {
+    let handshake: Handshake = match serde_json::from_slice(&body) {
         Ok(h) => h,
         Err(e) => {
             warn!("Invalid handshake JSON: {}", e);
@@ -146,14 +146,14 @@ where
             // Inbound: read next frame from client.
             result = read_frame(&mut reader) => {
                 match result {
-                    Ok((op, mut body)) => {
+                    Ok((op, body)) => {
                         match IpcOpcode::from_i32(op) {
                             Some(IpcOpcode::Ping) => {
                                 let pong = encode(IpcOpcode::Pong as i32, "");
                                 let _ = writer.write_all(&pong).await;
                             }
                             Some(IpcOpcode::Frame) => {
-                                match crate::json::from_slice::<crate::types::RpcMessage>(&mut body) {
+                                match serde_json::from_slice::<crate::types::RpcMessage>(&body) {
                                     Ok(msg) => {
                                         if let Some(resp) =
                                             state.handle_message(socket_id, &client_id, &msg).await

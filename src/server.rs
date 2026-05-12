@@ -1,14 +1,10 @@
-use std::collections::HashMap;
+use crate::HashMap;
 use std::sync::Arc;
 
-#[cfg(not(target_pointer_width = "64"))]
-use std::sync::atomic::AtomicU32 as Atomic;
-#[cfg(target_pointer_width = "64")]
-use std::sync::atomic::AtomicU64 as Atomic;
+use crate::Atomic;
 use std::sync::atomic::Ordering;
 
-use crate::json::{Value, json};
-use parking_lot::RwLock;
+use serde_json::{Value, json};
 use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, warn};
 
@@ -21,7 +17,11 @@ pub const READY_PAYLOAD: &str = r#"{"cmd":"DISPATCH","data":{"v":1,"config":{"cd
 pub struct ServerState {
     pub next_socket_id: Atomic,
     pub activity_tx: broadcast::Sender<ActivityEvent>,
-    sockets: RwLock<HashMap<u64, mpsc::UnboundedSender<String>>>,
+    /// Read-heavy concurrent map: socket_id → per-socket response sender.
+    ///
+    /// Uses `papaya` (epoch-based, optimised for reads) because every inbound
+    /// message triggers a read while socket register/unregister are rare.
+    sockets: HashMap<u64, mpsc::UnboundedSender<String>>,
 }
 
 impl ServerState {
@@ -31,7 +31,7 @@ impl ServerState {
         let state = Arc::new(Self {
             next_socket_id: Atomic::new(1),
             activity_tx,
-            sockets: RwLock::new(HashMap::new()),
+            sockets: HashMap::default(),
         });
         (state, activity_rx)
     }
@@ -50,12 +50,12 @@ impl ServerState {
 
     /// Register a per-socket response sender.
     pub async fn register_socket(&self, socket_id: u64, tx: mpsc::UnboundedSender<String>) {
-        self.sockets.write().insert(socket_id, tx);
+        self.sockets.pin().insert(socket_id, tx);
     }
 
     /// Remove a socket and emit a null-activity cleanup event.
     pub async fn unregister_socket(&self, socket_id: u64) {
-        self.sockets.write().remove(&socket_id);
+        self.sockets.pin().remove(&socket_id);
         let _ = self.activity_tx.send(ActivityEvent {
             activity: None,
             pid: None,
@@ -65,8 +65,7 @@ impl ServerState {
 
     /// Forward a text frame to a specific socket.
     pub async fn send_to_socket(&self, socket_id: u64, msg: String) {
-        let sockets = self.sockets.read();
-        if let Some(tx) = sockets.get(&socket_id) {
+        if let Some(tx) = self.sockets.pin().get(&socket_id) {
             let _ = tx.send(msg);
         }
     }
@@ -93,7 +92,7 @@ impl ServerState {
                             pid,
                             socket_id,
                         });
-                        crate::json::to_string(&json!({
+                        serde_json::to_string(&json!({
                             "cmd": msg.cmd,
                             "data": null,
                             "evt": null,
@@ -103,8 +102,8 @@ impl ServerState {
                     }
                     Some(raw_activity) => {
                         let mut activity = raw_activity.clone();
-                        let mut metadata = crate::json::Map::new();
-                        let mut extra = crate::json::Map::new();
+                        let mut metadata = serde_json::Map::new();
+                        let mut extra = serde_json::Map::new();
 
                         // Map buttons: extract labels for the frame, urls for metadata.
                         if let Some(buttons) = activity
@@ -144,7 +143,7 @@ impl ServerState {
                         let flags: u64 = if instance { 1 } else { 0 };
 
                         // Merge base fields, activity fields, then extra (buttons).
-                        let mut full = crate::json::Map::new();
+                        let mut full = serde_json::Map::new();
                         full.insert("application_id".to_string(), json!(client_id));
                         full.insert("type".to_string(), json!(0u32));
                         full.insert("metadata".to_string(), Value::Object(metadata));
@@ -172,7 +171,7 @@ impl ServerState {
                             obj.insert("type".to_string(), json!(0u32));
                         }
 
-                        crate::json::to_string(&json!({
+                        serde_json::to_string(&json!({
                             "cmd": msg.cmd,
                             "data": resp_data,
                             "evt": null,
@@ -183,7 +182,7 @@ impl ServerState {
                 }
             }
 
-            "CONNECTIONS_CALLBACK" => crate::json::to_string(&json!({
+            "CONNECTIONS_CALLBACK" => serde_json::to_string(&json!({
                 "cmd": msg.cmd,
                 "data": {"code": 1000},
                 "evt": "ERROR",
@@ -220,7 +219,7 @@ impl Default for ServerState {
         Self {
             next_socket_id: Atomic::new(1),
             activity_tx,
-            sockets: RwLock::new(HashMap::new()),
+            sockets: HashMap::default(),
         }
     }
 }
