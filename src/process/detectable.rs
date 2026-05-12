@@ -2,6 +2,7 @@ use crate::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Duration;
 
+use ahash::AHashMap;
 use fst::Set;
 use redb::{Database, ReadTransaction, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
@@ -155,8 +156,8 @@ pub(crate) async fn load_detectable_entries() -> Vec<DetectableEntry> {
 ///
 /// 1. **FST** (`fst::Set`, O(|name|), pure memory) — membership pre-filter.
 ///    Only exe names that appear in the FST proceed to the next level.
-/// 2. **`exe_index`** (`HashMap`, O(1), pure memory) — maps each exe name to
-///    the list of app IDs that declare that executable.  Eliminates the
+/// 2. **`exe_index`** (`papaya::HashMap`, O(1), pure memory) — maps each exe
+///    name to the list of app IDs that declare that executable.  Eliminates the
 ///    intermediate `EXES_TABLE` redb lookup that was previously needed.
 /// 3. **redb apps table** (mmap-backed) — only reached when both (1) and (2)
 ///    confirm a candidate.  Provides the rkyv-serialised entry for argument
@@ -176,7 +177,8 @@ pub struct DetectableDb {
 }
 
 impl DetectableDb {
-    /// Open an existing redb database and rebuild the FST from its exe table.
+    /// Open an existing redb database and rebuild the FST and exe_index from
+    /// its exe table.
     pub fn open(db_path: &std::path::Path) -> anyhow::Result<Self> {
         let db = Database::open(db_path)?;
         let mut this = Self {
@@ -219,15 +221,16 @@ impl DetectableDb {
 
     // ── internals ─────────────────────────────────────────────────────────────
 
-    /// Write `entries` into both redb tables, populate the in-memory exe_index,
-    /// and rebuild the in-memory FST.
+    /// Write `entries` into both redb tables, populate the in-memory
+    /// `exe_index`, and rebuild the in-memory FST.
     fn ingest_entries(&mut self, entries: &[DetectableEntry]) -> anyhow::Result<()> {
-        // exe_name → list of app IDs (preserving insertion order).
-        let exe_to_ids: HashMap<String, Vec<String>> = HashMap::default();
+        // Build exe_name → Vec<app_id> with a plain AHashMap (single-threaded).
+        let mut exe_to_ids: AHashMap<String, Vec<String>> = AHashMap::default();
 
         let write_txn = self.db.begin_write()?;
         {
             let mut apps = write_txn.open_table(APPS_TABLE)?;
+            let mut exes = write_txn.open_table(EXES_TABLE)?;
 
             for entry in entries {
                 // Serialise with rkyv for zero-copy-friendly binary storage.
@@ -236,41 +239,34 @@ impl DetectableDb {
                 apps.insert(entry.id.as_str(), bytes.as_slice())?;
 
                 for exe in &entry.executables {
-                    exe_to_ids.pin().update_or_insert(
-                        exe.name.clone(),
-                        |v| {
-                            let mut new_v = v.clone();
-                            new_v.push(entry.id.clone());
-                            new_v
-                        },
-                        vec![entry.id.clone()],
-                    );
+                    exe_to_ids
+                        .entry(exe.name.clone())
+                        .or_default()
+                        .push(entry.id.clone());
                 }
             }
-            let pin_index = self.exe_index.pin();
-            let pin_src = exe_to_ids.pin();
-            for (exe_name, ids) in pin_src.iter() {
-                pin_index.insert(exe_name.clone(), ids.clone());
+
+            for (exe_name, ids) in &exe_to_ids {
+                let joined = ids.join("\n");
+                exes.insert(exe_name.as_str(), joined.as_str())?;
             }
         }
         write_txn.commit()?;
 
         // Populate the in-memory exe_index (bypasses EXES_TABLE in the hot path).
         {
-            let pin_dest = self.exe_index.pin();
-            let pin_src = exe_to_ids.pin();
-
-            for (exe_name, ids) in pin_src.iter() {
-                pin_dest.insert(exe_name.clone(), ids.clone());
+            let pin = self.exe_index.pin();
+            for (exe_name, ids) in &exe_to_ids {
+                pin.insert(exe_name.clone(), ids.clone());
             }
         }
 
         // Build FST – keys must be inserted in sorted (lexicographic) order.
-        let mut sorted_names: Vec<String> = exe_to_ids.pin().keys().cloned().collect();
+        let mut sorted_names: Vec<&String> = exe_to_ids.keys().collect();
         sorted_names.sort_unstable();
 
         let mut builder = fst::SetBuilder::memory();
-        for name in &sorted_names {
+        for name in sorted_names {
             builder.insert(name.as_bytes())?;
         }
         self.fst = builder.into_set();
@@ -284,7 +280,7 @@ impl DetectableDb {
         let read_txn: ReadTransaction = self.db.begin_read()?;
 
         // The table might not exist in a freshly created (but empty) database.
-        let exes = match read_txn.open_table(EXES_TABLE) {
+        let exes: redb::ReadOnlyTable<&str, &str> = match read_txn.open_table(EXES_TABLE) {
             Ok(t) => t,
             Err(_) => return Ok(()),
         };
@@ -293,6 +289,8 @@ impl DetectableDb {
         {
             let pin = self.exe_index.pin();
             for (k, v) in exes.iter()?.flatten() {
+                let k: redb::AccessGuard<&str> = k;
+                let v: redb::AccessGuard<&str> = v;
                 let exe_name = k.value().to_string();
                 let ids: Vec<String> = v.value().split('\n').map(str::to_owned).collect();
                 pin.insert(exe_name.clone(), ids);
@@ -346,7 +344,7 @@ impl DetectableDb {
             return None;
         }
 
-        // ── exe_index lookup (in-memory HashMap, no disk I/O) ─────────────────
+        // ── exe_index lookup (in-memory papaya::HashMap, no disk I/O) ────────
         let seen: HashSet<String> = HashSet::default();
         let mut app_ids: Vec<String> = Vec::new();
         {
@@ -366,13 +364,14 @@ impl DetectableDb {
             return None;
         }
 
-        // ── redb APPS_TABLE lookup (disk-backed, only on confirmed hits) ──────
+        // ── redb APPS_TABLE lookup (mmap-backed, only on confirmed hits) ──────
         let read_txn: ReadTransaction = self.db.begin_read().ok()?;
-        let apps = read_txn.open_table(APPS_TABLE).ok()?;
+        let apps: redb::ReadOnlyTable<&str, &[u8]> = read_txn.open_table(APPS_TABLE).ok()?;
 
         // Verify each candidate with the full match logic.
         for app_id in &app_ids {
             if let Ok(Some(guard)) = apps.get(app_id.as_str()) {
+                let guard: redb::AccessGuard<&[u8]> = guard;
                 let bytes: &[u8] = guard.value();
 
                 // Copy into a 16-byte-aligned buffer so rkyv can access the

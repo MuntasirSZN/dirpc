@@ -24,7 +24,7 @@ sockudo-ws = { version = "1.7.4", features = [
 bytes = "1"
 serde = { version = "1", features = ["derive"] }
 jiff = "0.2"
-sysinfo = "0.39"
+sysinfo = "0.38"
 reqwest = { version = "0.13", features = ["rustls", "socks", "json"] }
 clap = { version = "4", features = ["derive", "env", "cargo"] }
 clap-verbosity-flag = { version = "3", default-features = false, features = [

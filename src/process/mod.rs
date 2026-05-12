@@ -1,6 +1,6 @@
 pub mod detectable;
 
-use crate::HashMap;
+use ahash::AHashMap;
 use std::sync::Arc;
 
 use serde_json::json;
@@ -96,7 +96,8 @@ pub async fn start_process_scanner(state: Arc<ServerState>) {
         }
     };
 
-    let mut active: HashMap<u32, String> = HashMap::default();
+    // pid → app_id for currently-active games.
+    let mut active: AHashMap<u32, String> = AHashMap::default();
     let mut last_refresh = std::time::Instant::now();
 
     loop {
@@ -132,19 +133,19 @@ pub async fn start_process_scanner(state: Arc<ServerState>) {
 pub async fn scan_once(
     state: &Arc<ServerState>,
     db: &DetectableDb,
-    active: &mut HashMap<u32, String>,
+    active: &mut AHashMap<u32, String>,
 ) {
     let processes = get_process_list().await;
 
-    let still_present: HashMap<u32, String> = HashMap::default();
+    let mut still_present: AHashMap<u32, String> = AHashMap::default();
 
     for proc in &processes {
         let arg_refs: Vec<&str> = proc.args.iter().map(String::as_str).collect();
         if let Some((id, name)) = db.match_process(&proc.path, &arg_refs) {
-            still_present.pin().insert(proc.pid, id.clone());
+            still_present.insert(proc.pid, id.clone());
 
             // Newly detected game.
-            if !active.pin().contains_key(&proc.pid) {
+            if !active.contains_key(&proc.pid) {
                 debug!("Detected game '{}' (id={}) pid={}", name, id, proc.pid);
                 let activity = json!({
                     "application_id": id,
@@ -166,9 +167,8 @@ pub async fn scan_once(
 
     // Games that disappeared since last scan.
     let lost: Vec<u32> = active
-        .pin()
         .keys()
-        .filter(|pid| !still_present.pin().contains_key(*pid))
+        .filter(|pid| !still_present.contains_key(*pid))
         .copied()
         .collect();
 
@@ -179,7 +179,7 @@ pub async fn scan_once(
             args: Some(json!({ "pid": pid, "activity": null })),
             ..Default::default()
         };
-        let game_id = active.pin().get(&pid).cloned().unwrap_or_default();
+        let game_id = active.get(&pid).cloned().unwrap_or_default();
         state.handle_message(0, &game_id, &msg).await;
     }
 
