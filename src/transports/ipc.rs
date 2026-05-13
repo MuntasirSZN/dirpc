@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use smallvec::SmallVec;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{debug, error, info, warn};
 
@@ -9,14 +8,10 @@ use crate::server::{READY_PAYLOAD, ServerState};
 use crate::types::{Handshake, IpcOpcode};
 
 /// Encode an IPC frame: 4-byte LE opcode + 4-byte LE length + payload bytes.
-///
-/// Uses inline stack storage for payloads up to 512 bytes (520 total with
-/// header), avoiding heap allocation for the vast majority of Discord RPC
-/// messages.
-pub fn encode(opcode: i32, data: &str) -> SmallVec<[u8; 520]> {
+pub fn encode(opcode: i32, data: &str) -> Vec<u8> {
     let bytes = data.as_bytes();
     let len = bytes.len() as i32;
-    let mut buf = SmallVec::with_capacity(8 + bytes.len());
+    let mut buf = Vec::with_capacity(8 + bytes.len());
     buf.extend_from_slice(&opcode.to_le_bytes());
     buf.extend_from_slice(&len.to_le_bytes());
     buf.extend_from_slice(bytes);
@@ -52,7 +47,7 @@ async fn read_frame<R: AsyncReadExt + Unpin>(reader: &mut R) -> std::io::Result<
 /// Build the IPC path for `discord-ipc-{n}`.
 ///
 /// | Platform      | Path format                                                |
-/// |---------------|---------------------------------------------------------------|
+/// |---------------|------------------------------------------------------------|
 /// | Windows       | `\\.\pipe\discord-ipc-{n}`                                 |
 /// | Linux / macOS | `$XDG_RUNTIME_DIR/discord-ipc-{n}` (or TMPDIR/TMP/TEMP/tmp)|
 #[cfg(windows)]

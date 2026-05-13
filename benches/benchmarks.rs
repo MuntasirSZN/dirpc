@@ -3,7 +3,6 @@ use dirpc::sample_entries;
 use divan::AllocProfiler;
 #[cfg(not(miri))]
 use mimalloc_safe::MiMalloc;
-use smallvec::SmallVec;
 
 #[cfg(not(miri))]
 #[global_allocator]
@@ -16,7 +15,7 @@ fn main() {
 // ─── IPC codec ───────────────────────────────────────────────────────────────
 
 #[divan::bench]
-fn bench_encode_small() -> SmallVec<[u8; 520]> {
+fn bench_encode_small() -> Vec<u8> {
     dirpc::encode(1, r#"{"cmd":"SET_ACTIVITY","nonce":"abc"}"#)
 }
 
