@@ -1,6 +1,8 @@
 pub mod detectable;
 
 use ahash::AHashMap;
+use compact_str::CompactString;
+use smallvec::SmallVec;
 use std::sync::Arc;
 
 use serde_json::json;
@@ -14,9 +16,9 @@ use detectable::{DetectableDb, cache_db_path, load_detectable_entries};
 pub struct ProcessInfo {
     pub pid: u32,
     /// Path to the executable (argv[0]).
-    pub path: String,
+    pub path: CompactString,
     /// Additional command-line arguments (argv[1..]).
-    pub args: Vec<String>,
+    pub args: SmallVec<[CompactString; 8]>,
 }
 
 /// Read the current process list using [`sysinfo`] (cross-platform).
@@ -34,15 +36,15 @@ pub async fn get_process_list() -> Vec<ProcessInfo> {
                 if path.is_empty() {
                     return None;
                 }
-                let args: Vec<String> = proc
+                let args: SmallVec<[CompactString; 8]> = proc
                     .cmd()
                     .iter()
                     .skip(1) // skip argv[0] (the executable itself)
-                    .map(|s| s.to_string_lossy().into_owned())
+                    .map(|s| CompactString::from(s.to_string_lossy().as_ref()))
                     .collect();
                 Some(ProcessInfo {
                     pid: proc.pid().as_u32(),
-                    path,
+                    path: CompactString::from(path.as_str()),
                     args,
                 })
             })
@@ -97,7 +99,7 @@ pub async fn start_process_scanner(state: Arc<ServerState>) {
     };
 
     // pid → app_id for currently-active games.
-    let mut active: AHashMap<u32, String> = AHashMap::default();
+    let mut active: AHashMap<u32, CompactString> = AHashMap::default();
     let mut last_refresh = std::time::Instant::now();
 
     loop {
@@ -133,14 +135,14 @@ pub async fn start_process_scanner(state: Arc<ServerState>) {
 pub async fn scan_once(
     state: &Arc<ServerState>,
     db: &DetectableDb,
-    active: &mut AHashMap<u32, String>,
+    active: &mut AHashMap<u32, CompactString>,
 ) {
     let processes = get_process_list().await;
 
-    let mut still_present: AHashMap<u32, String> = AHashMap::default();
+    let mut still_present: AHashMap<u32, CompactString> = AHashMap::default();
 
     for proc in &processes {
-        let arg_refs: Vec<&str> = proc.args.iter().map(String::as_str).collect();
+        let arg_refs: SmallVec<[&str; 8]> = proc.args.iter().map(CompactString::as_str).collect();
         if let Some((id, name)) = db.match_process(&proc.path, &arg_refs) {
             still_present.insert(proc.pid, id.clone());
 
@@ -153,7 +155,7 @@ pub async fn scan_once(
                     "timestamps": {"start": now_ms()},
                 });
                 let msg = crate::types::RpcMessage {
-                    cmd: "SET_ACTIVITY".to_string(),
+                    cmd: "SET_ACTIVITY".into(),
                     args: Some(json!({
                         "pid": proc.pid,
                         "activity": activity,
@@ -175,7 +177,7 @@ pub async fn scan_once(
     for pid in lost {
         debug!("Lost game pid={}", pid);
         let msg = crate::types::RpcMessage {
-            cmd: "SET_ACTIVITY".to_string(),
+            cmd: "SET_ACTIVITY".into(),
             args: Some(json!({ "pid": pid, "activity": null })),
             ..Default::default()
         };

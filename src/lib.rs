@@ -4,6 +4,8 @@ pub mod server;
 pub mod transports;
 pub mod types;
 
+use smallvec::smallvec;
+
 pub use bridge::{BridgeState, start_bridge};
 pub use process::detectable::{
     DetectableEntry, Executable, match_process, path_filename, path_variants, strip_64_suffix,
@@ -24,30 +26,30 @@ pub type HashSet<K> = papaya::HashSet<K, ahash::RandomState>;
 pub fn sample_entries() -> Vec<DetectableEntry> {
     vec![
         DetectableEntry {
-            id: "359550717720469504".to_string(),
-            name: "Counter-Strike: Global Offensive".to_string(),
-            executables: vec![Executable {
-                name: "csgo".to_string(),
+            id: "359550717720469504".into(),
+            name: "Counter-Strike: Global Offensive".into(),
+            executables: smallvec![Executable {
+                name: "csgo".into(),
                 is_launcher: false,
                 arguments: None,
                 os: None,
             }],
         },
         DetectableEntry {
-            id: "356869127241924608".to_string(),
-            name: "Overwatch".to_string(),
-            executables: vec![Executable {
-                name: "overwatch.exe".to_string(),
+            id: "356869127241924608".into(),
+            name: "Overwatch".into(),
+            executables: smallvec![Executable {
+                name: "overwatch.exe".into(),
                 is_launcher: false,
                 arguments: None,
                 os: None,
             }],
         },
         DetectableEntry {
-            id: "1073232715901124688".to_string(),
-            name: "Counter-Strike 2".to_string(),
-            executables: vec![Executable {
-                name: "cs2".to_string(),
+            id: "1073232715901124688".into(),
+            name: "Counter-Strike 2".into(),
+            executables: smallvec![Executable {
+                name: "cs2".into(),
                 is_launcher: false,
                 arguments: None,
                 os: None,
