@@ -3,9 +3,11 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use ahash::AHashMap;
+use compact_str::CompactString;
 use fst::Set;
 use redb::{Database, ReadTransaction, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
+use smallvec::SmallVec;
 use tracing::warn;
 
 /// One executable entry inside a detectable game record.
@@ -20,14 +22,14 @@ use tracing::warn;
     rkyv::Deserialize,
 )]
 pub struct Executable {
-    pub name: String,
+    pub name: CompactString,
     #[serde(default)]
     pub is_launcher: bool,
     /// Optional required command-line arguments.
     #[serde(default)]
-    pub arguments: Option<Vec<String>>,
+    pub arguments: Option<SmallVec<[CompactString; 2]>>,
     #[serde(default)]
-    pub os: Option<String>,
+    pub os: Option<CompactString>,
 }
 
 /// A detectable game/application record.
@@ -35,9 +37,9 @@ pub struct Executable {
     Debug, Clone, Deserialize, Serialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
 )]
 pub struct DetectableEntry {
-    pub id: String,
-    pub name: String,
-    pub executables: Vec<Executable>,
+    pub id: CompactString,
+    pub name: CompactString,
+    pub executables: SmallVec<[Executable; 2]>,
 }
 
 /// Discord's detectable-applications endpoint.
@@ -173,7 +175,7 @@ pub struct DetectableDb {
     /// Bypasses the `EXES_TABLE` redb round-trip in the hot scan path.
     /// Populated from `exe_to_ids` during `ingest_entries` and reconstructed
     /// from the `EXES_TABLE` rows during `open`.
-    exe_index: HashMap<String, Vec<String>>,
+    exe_index: HashMap<CompactString, SmallVec<[CompactString; 4]>>,
 }
 
 impl DetectableDb {
@@ -225,7 +227,8 @@ impl DetectableDb {
     /// `exe_index`, and rebuild the in-memory FST.
     fn ingest_entries(&mut self, entries: &[DetectableEntry]) -> anyhow::Result<()> {
         // Build exe_name → Vec<app_id> with a plain AHashMap (single-threaded).
-        let mut exe_to_ids: AHashMap<String, Vec<String>> = AHashMap::default();
+        let mut exe_to_ids: AHashMap<CompactString, SmallVec<[CompactString; 4]>> =
+            AHashMap::default();
 
         let write_txn = self.db.begin_write()?;
         {
@@ -247,7 +250,11 @@ impl DetectableDb {
             }
 
             for (exe_name, ids) in &exe_to_ids {
-                let joined = ids.join("\n");
+                let joined = ids
+                    .iter()
+                    .map(CompactString::as_str)
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 exes.insert(exe_name.as_str(), joined.as_str())?;
             }
         }
@@ -262,7 +269,7 @@ impl DetectableDb {
         }
 
         // Build FST – keys must be inserted in sorted (lexicographic) order.
-        let mut sorted_names: Vec<String> = exe_to_ids.keys().cloned().collect();
+        let mut sorted_names: Vec<CompactString> = exe_to_ids.keys().cloned().collect();
         sorted_names.sort_unstable();
 
         let mut builder = fst::SetBuilder::memory();
@@ -285,12 +292,13 @@ impl DetectableDb {
             Err(_) => return Ok(()),
         };
 
-        let mut names: Vec<String> = Vec::new();
+        let mut names: Vec<CompactString> = Vec::new();
         {
             let pin = self.exe_index.pin();
             for (k, v) in exes.iter()?.flatten() {
-                let exe_name = k.value().to_string();
-                let ids: Vec<String> = v.value().split('\n').map(str::to_owned).collect();
+                let exe_name = CompactString::from(k.value());
+                let ids: SmallVec<[CompactString; 4]> =
+                    v.value().split('\n').map(CompactString::from).collect();
                 pin.insert(exe_name.clone(), ids);
                 names.push(exe_name);
             }
@@ -319,23 +327,27 @@ impl DetectableDb {
     ///    Yields the candidate app IDs without touching redb at all.
     /// 3. **redb `apps` table** — mmap-backed, only reached for confirmed hits.  
     ///    Provides the rkyv-serialised entry for argument validation.
-    pub fn match_process(&self, path: &str, args: &[&str]) -> Option<(String, String)> {
+    pub fn match_process(
+        &self,
+        path: &str,
+        args: &[&str],
+    ) -> Option<(CompactString, CompactString)> {
         let variants = path_variants(path);
         let filename = path_filename(path);
 
         // Build the set of FST look-up candidates:
         //   • regular path variants  (e.g. "csgo", "game/csgo")
         //   • exact-filename variant  (e.g. ">csgo")
-        let mut candidates: Vec<String> = variants.clone();
+        let mut candidates: SmallVec<[CompactString; 8]> = variants.clone();
         if !filename.is_empty() {
-            candidates.push(format!(">{filename}"));
+            candidates.push(CompactString::from(format!(">{filename}")));
         }
 
         // ── FST pre-filter (in-memory, O(|name|) per candidate) ──────────────
-        let hit_names: Vec<&str> = candidates
+        let hit_names: SmallVec<[&str; 8]> = candidates
             .iter()
             .filter(|c| self.fst.contains(c.as_bytes()))
-            .map(String::as_str)
+            .map(CompactString::as_str)
             .collect();
 
         if hit_names.is_empty() {
@@ -343,8 +355,8 @@ impl DetectableDb {
         }
 
         // ── exe_index lookup (in-memory papaya::HashMap, no disk I/O) ────────
-        let seen: HashSet<String> = HashSet::default();
-        let mut app_ids: Vec<String> = Vec::new();
+        let seen: HashSet<CompactString> = HashSet::default();
+        let mut app_ids: SmallVec<[CompactString; 8]> = SmallVec::new();
         {
             let pin = self.exe_index.pin();
             for exe_name in &hit_names {
@@ -382,8 +394,8 @@ impl DetectableDb {
                     && archived_match(archived, path, args)
                 {
                     return Some((
-                        archived.id.as_str().to_owned(),
-                        archived.name.as_str().to_owned(),
+                        CompactString::from(archived.id.as_str()),
+                        CompactString::from(archived.name.as_str()),
                     ));
                 }
             }
@@ -443,16 +455,16 @@ fn archived_match(archived: &ArchivedDetectableEntry, path: &str, args: &[&str])
 ///
 /// Produces up to 4 trailing path components joined with `/`, plus de-64-bit-ified
 /// variants of each, to match entries like `csgo`, `game/csgo`, `hl2/game/csgo`, …
-pub fn path_variants(path: &str) -> Vec<String> {
+pub fn path_variants(path: &str) -> SmallVec<[CompactString; 8]> {
     // Support both Unix `/` and Windows `\` separators.
-    let parts: Vec<&str> = path.split(['/', '\\']).filter(|s| !s.is_empty()).collect();
-    let mut variants: Vec<String> = Vec::new();
+    let parts: SmallVec<[&str; 16]> = path.split(['/', '\\']).filter(|s| !s.is_empty()).collect();
+    let mut variants: SmallVec<[CompactString; 8]> = SmallVec::new();
 
     let start = if parts.len() > 4 { parts.len() - 4 } else { 0 };
     for i in start..parts.len() {
         let suffix = parts[i..].join("/");
         let cleaned = strip_64_suffix(&suffix);
-        variants.push(suffix.clone());
+        variants.push(CompactString::from(suffix.as_str()));
         if cleaned != suffix {
             variants.push(cleaned);
         }
@@ -466,14 +478,14 @@ pub fn path_variants(path: &str) -> Vec<String> {
 /// Checks only at the end of the string so names like "base64encoder" are
 /// left intact. Ordered from most-specific to least-specific to avoid
 /// partial overwrites.
-pub fn strip_64_suffix(name: &str) -> String {
+pub fn strip_64_suffix(name: &str) -> CompactString {
     // Must be checked before the shorter patterns they contain.
     for suffix in [".x64", "_64", "x64", "64"] {
         if let Some(stripped) = name.strip_suffix(suffix) {
-            return stripped.to_string();
+            return CompactString::from(stripped);
         }
     }
-    name.to_string()
+    CompactString::from(name)
 }
 
 /// Extract the last path component from a Unix or Windows path.
@@ -499,9 +511,11 @@ pub fn match_process<'a>(
         for exe in &entry.executables {
             let matched = if exe.name.starts_with('>') {
                 // Exact filename match only.
-                &exe.name[1..] == filename
+                exe.name
+                    .strip_prefix('>')
+                    .is_some_and(|exact| exact == filename)
             } else {
-                variants.iter().any(|v| v == &exe.name)
+                variants.iter().any(|v| v.as_str() == exe.name.as_str())
             };
 
             if !matched {
@@ -510,7 +524,9 @@ pub fn match_process<'a>(
 
             // Check required arguments if specified.
             if exe.arguments.as_ref().is_some_and(|required_args| {
-                !required_args.iter().all(|ra| args.iter().any(|a| a == ra))
+                !required_args
+                    .iter()
+                    .all(|ra| args.iter().any(|a| *a == ra.as_str()))
             }) {
                 continue;
             }

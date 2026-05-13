@@ -9,6 +9,7 @@ use dirpc::{
     validate_origin,
 };
 use serde_json::{Value, json};
+use smallvec::smallvec;
 
 #[test]
 fn test_ipc_encode_decode_roundtrip() {
@@ -85,8 +86,8 @@ async fn test_connections_callback() {
     let state = Arc::new(state);
 
     let msg = RpcMessage {
-        cmd: "CONNECTIONS_CALLBACK".to_string(),
-        nonce: Some("abc".to_string()),
+        cmd: "CONNECTIONS_CALLBACK".into(),
+        nonce: Some("abc".into()),
         ..Default::default()
     };
 
@@ -109,9 +110,9 @@ async fn test_set_activity_null_clears_activity() {
     let state = Arc::new(state);
 
     let msg = RpcMessage {
-        cmd: "SET_ACTIVITY".to_string(),
+        cmd: "SET_ACTIVITY".into(),
         args: Some(json!({"pid": 42, "activity": null})),
-        nonce: Some("n1".to_string()),
+        nonce: Some("n1".into()),
         ..Default::default()
     };
 
@@ -139,7 +140,7 @@ async fn test_set_activity_with_activity_broadcasts_event() {
     let state = Arc::new(state);
 
     let msg = RpcMessage {
-        cmd: "SET_ACTIVITY".to_string(),
+        cmd: "SET_ACTIVITY".into(),
         args: Some(json!({
             "pid": 999,
             "activity": {
@@ -147,7 +148,7 @@ async fn test_set_activity_with_activity_broadcasts_event() {
                 "state": "In a match"
             }
         })),
-        nonce: Some("n2".to_string()),
+        nonce: Some("n2".into()),
         ..Default::default()
     };
 
@@ -177,7 +178,7 @@ async fn test_set_activity_buttons_are_processed() {
     let state = Arc::new(state);
 
     let msg = RpcMessage {
-        cmd: "SET_ACTIVITY".to_string(),
+        cmd: "SET_ACTIVITY".into(),
         args: Some(json!({
             "pid": 1,
             "activity": {
@@ -212,7 +213,7 @@ async fn test_set_activity_instance_flag() {
     let state = Arc::new(state);
 
     let msg = RpcMessage {
-        cmd: "SET_ACTIVITY".to_string(),
+        cmd: "SET_ACTIVITY".into(),
         args: Some(json!({"pid": 1, "activity": {"instance": true}})),
         ..Default::default()
     };
@@ -230,7 +231,7 @@ async fn test_set_activity_no_instance_flag() {
     let state = Arc::new(state);
 
     let msg = RpcMessage {
-        cmd: "SET_ACTIVITY".to_string(),
+        cmd: "SET_ACTIVITY".into(),
         args: Some(json!({"pid": 1, "activity": {"instance": false}})),
         ..Default::default()
     };
@@ -248,7 +249,7 @@ async fn test_invite_browser_returns_none() {
     let state = Arc::new(state);
 
     let msg = RpcMessage {
-        cmd: "INVITE_BROWSER".to_string(),
+        cmd: "INVITE_BROWSER".into(),
         args: Some(json!({"code": "abc123"})),
         ..Default::default()
     };
@@ -264,7 +265,7 @@ async fn test_guild_template_browser_returns_none() {
     let state = Arc::new(state);
 
     let msg = RpcMessage {
-        cmd: "GUILD_TEMPLATE_BROWSER".to_string(),
+        cmd: "GUILD_TEMPLATE_BROWSER".into(),
         ..Default::default()
     };
 
@@ -278,7 +279,7 @@ async fn test_deep_link_returns_none() {
     let state = Arc::new(state);
 
     let msg = RpcMessage {
-        cmd: "DEEP_LINK".to_string(),
+        cmd: "DEEP_LINK".into(),
         ..Default::default()
     };
 
@@ -292,7 +293,7 @@ async fn test_unknown_command_returns_none() {
     let state = Arc::new(state);
 
     let msg = RpcMessage {
-        cmd: "TOTALLY_UNKNOWN".to_string(),
+        cmd: "TOTALLY_UNKNOWN".into(),
         ..Default::default()
     };
 
@@ -406,21 +407,21 @@ async fn test_bridge_last_msgs_updated() {
 #[test]
 fn test_path_variants_simple() {
     let vs = path_variants("/usr/bin/csgo");
-    assert!(vs.contains(&"csgo".to_string()));
-    assert!(vs.contains(&"bin/csgo".to_string()));
-    assert!(vs.contains(&"usr/bin/csgo".to_string()));
+    assert!(vs.iter().any(|v| v == "csgo"));
+    assert!(vs.iter().any(|v| v == "bin/csgo"));
+    assert!(vs.iter().any(|v| v == "usr/bin/csgo"));
 }
 
 #[test]
 fn test_path_variants_max_four_components() {
     let vs = path_variants("/a/b/c/d/e/game");
     // Only last 4 components.
-    assert!(vs.contains(&"game".to_string()));
-    assert!(vs.contains(&"e/game".to_string()));
-    assert!(vs.contains(&"d/e/game".to_string()));
-    assert!(vs.contains(&"c/d/e/game".to_string()));
+    assert!(vs.iter().any(|v| v == "game"));
+    assert!(vs.iter().any(|v| v == "e/game"));
+    assert!(vs.iter().any(|v| v == "d/e/game"));
+    assert!(vs.iter().any(|v| v == "c/d/e/game"));
     // 5-component variant should NOT appear.
-    assert!(!vs.contains(&"b/c/d/e/game".to_string()));
+    assert!(!vs.iter().any(|v| v == "b/c/d/e/game"));
 }
 
 #[test]
@@ -447,8 +448,8 @@ fn test_path_filename() {
 #[test]
 fn test_path_variants_includes_64_cleaned() {
     let vs = path_variants("/opt/csgo64");
-    assert!(vs.contains(&"csgo64".to_string()));
-    assert!(vs.contains(&"csgo".to_string())); // stripped variant
+    assert!(vs.iter().any(|v| v == "csgo64"));
+    assert!(vs.iter().any(|v| v == "csgo")); // stripped variant
 }
 
 #[test]
@@ -488,10 +489,10 @@ fn test_match_process_exact_name_prefix() {
     use dirpc::process::detectable::{DetectableEntry, Executable};
 
     let entries = vec![DetectableEntry {
-        id: "test".to_string(),
-        name: "TestGame".to_string(),
-        executables: vec![Executable {
-            name: ">testgame".to_string(),
+        id: "test".into(),
+        name: "TestGame".into(),
+        executables: smallvec![Executable {
+            name: ">testgame".into(),
             is_launcher: false,
             arguments: None,
             os: None,
@@ -511,12 +512,12 @@ fn test_match_process_with_required_args() {
     use dirpc::process::detectable::{DetectableEntry, Executable};
 
     let entries = vec![DetectableEntry {
-        id: "argtest".to_string(),
-        name: "ArgGame".to_string(),
-        executables: vec![Executable {
-            name: "launcher".to_string(),
+        id: "argtest".into(),
+        name: "ArgGame".into(),
+        executables: smallvec![Executable {
+            name: "launcher".into(),
             is_launcher: true,
-            arguments: Some(vec!["--game=mygame".to_string()]),
+            arguments: Some(smallvec!["--game=mygame".into()]),
             os: None,
         }],
     }];
@@ -557,7 +558,7 @@ async fn test_set_activity_timestamp_conversion() {
 
     let ts_s: i64 = 1_700_000_000;
     let msg = RpcMessage {
-        cmd: "SET_ACTIVITY".to_string(),
+        cmd: "SET_ACTIVITY".into(),
         args: Some(json!({
             "pid": 1,
             "activity": {
@@ -709,10 +710,10 @@ async fn test_detectable_db_match_exact_filename_prefix() {
     use dirpc::process::detectable::{DetectableDb, DetectableEntry, Executable};
     let path = temp_redb_path("exact");
     let entries = vec![DetectableEntry {
-        id: "exact_id".to_string(),
-        name: "ExactGame".to_string(),
-        executables: vec![Executable {
-            name: ">exactgame".to_string(),
+        id: "exact_id".into(),
+        name: "ExactGame".into(),
+        executables: smallvec![Executable {
+            name: ">exactgame".into(),
             is_launcher: false,
             arguments: None,
             os: None,
@@ -734,12 +735,12 @@ async fn test_detectable_db_match_required_args() {
     use dirpc::process::detectable::{DetectableDb, DetectableEntry, Executable};
     let path = temp_redb_path("args");
     let entries = vec![DetectableEntry {
-        id: "arg_id".to_string(),
-        name: "ArgGame".to_string(),
-        executables: vec![Executable {
-            name: "launcher".to_string(),
+        id: "arg_id".into(),
+        name: "ArgGame".into(),
+        executables: smallvec![Executable {
+            name: "launcher".into(),
             is_launcher: true,
-            arguments: Some(vec!["--game=mygame".to_string()]),
+            arguments: Some(smallvec!["--game=mygame".into()]),
             os: None,
         }],
     }];

@@ -1,15 +1,16 @@
+use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
 
 /// Incoming/outgoing RPC message envelope.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RpcMessage {
-    pub cmd: String,
+    pub cmd: CompactString,
     #[serde(default)]
     pub data: serde_json::Value,
     #[serde(default)]
-    pub evt: Option<String>,
+    pub evt: Option<CompactString>,
     #[serde(default)]
-    pub nonce: Option<String>,
+    pub nonce: Option<CompactString>,
     #[serde(default)]
     pub args: Option<serde_json::Value>,
 }
@@ -17,7 +18,7 @@ pub struct RpcMessage {
 impl Default for RpcMessage {
     fn default() -> Self {
         Self {
-            cmd: String::new(),
+            cmd: CompactString::default(),
             data: serde_json::Value::Null,
             evt: None,
             nonce: None,
@@ -38,7 +39,7 @@ pub struct ActivityEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Handshake {
     pub v: u32,
-    pub client_id: String,
+    pub client_id: CompactString,
 }
 
 /// IPC wire opcodes.
