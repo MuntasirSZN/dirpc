@@ -231,12 +231,18 @@ impl Default for ServerState {
 /// in ms has more than 2 more digits than `ts`, treat `ts` as seconds.
 pub fn maybe_to_ms(ts: i64) -> i64 {
     let now_ms = jiff::Timestamp::now().as_millisecond();
-    let now_len = now_ms.unsigned_abs().to_string().len();
-    let ts_len = ts.unsigned_abs().to_string().len();
+    let now_digits = digit_count(now_ms.unsigned_abs());
+    let ts_digits = digit_count(ts.unsigned_abs());
 
-    if now_len as i64 - ts_len as i64 > 2 {
+    if now_digits.saturating_sub(ts_digits) > 2 {
         ts * 1000
     } else {
         ts
     }
+}
+
+/// Count the number of decimal digits in `n` without allocating a string.
+#[inline]
+fn digit_count(n: u64) -> u32 {
+    if n == 0 { 1 } else { n.ilog10() + 1 }
 }

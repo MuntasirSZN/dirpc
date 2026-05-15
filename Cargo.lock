@@ -536,6 +536,7 @@ dependencies = [
  "rkyv",
  "serde",
  "serde_json",
+ "simdutf8",
  "smallvec",
  "sockudo-ws",
  "sysinfo",

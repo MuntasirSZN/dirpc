@@ -455,18 +455,36 @@ fn archived_match(archived: &ArchivedDetectableEntry, path: &str, args: &[&str])
 ///
 /// Produces up to 4 trailing path components joined with `/`, plus de-64-bit-ified
 /// variants of each, to match entries like `csgo`, `game/csgo`, `hl2/game/csgo`, …
+///
+/// Builds the longest suffix once and derives shorter suffixes as substrings,
+/// eliminating repeated `join("/")` heap allocations.
 pub fn path_variants(path: &str) -> SmallVec<[CompactString; 8]> {
     // Support both Unix `/` and Windows `\` separators.
     let parts: SmallVec<[&str; 16]> = path.split(['/', '\\']).filter(|s| !s.is_empty()).collect();
     let mut variants: SmallVec<[CompactString; 8]> = SmallVec::new();
 
     let start = if parts.len() > 4 { parts.len() - 4 } else { 0 };
-    for i in start..parts.len() {
-        let suffix = parts[i..].join("/");
-        let cleaned = strip_64_suffix(&suffix);
-        variants.push(CompactString::from(suffix.as_str()));
-        if cleaned != suffix {
-            variants.push(cleaned);
+
+    if start >= parts.len() {
+        return variants;
+    }
+
+    // Build the longest suffix once; derive shorter suffixes as substrings.
+    let full = parts[start..].join("/");
+    let mut offset = 0;
+    for _ in start..parts.len() {
+        let suffix = &full[offset..];
+        variants.push(CompactString::from(suffix));
+        // All 64-bit suffixes end with "64"; skip when impossible.
+        if suffix.ends_with("64") {
+            let cleaned = strip_64_suffix(suffix);
+            if cleaned.len() < suffix.len() {
+                variants.push(CompactString::from(cleaned));
+            }
+        }
+        // Advance past the next '/' separator to get the next shorter suffix.
+        if let Some(pos) = suffix.find('/') {
+            offset += pos + 1;
         }
     }
 
@@ -475,17 +493,30 @@ pub fn path_variants(path: &str) -> SmallVec<[CompactString; 8]> {
 
 /// Remove common 64-bit marker suffixes from a name.
 ///
+/// Returns a subslice of the input with zero allocation.
 /// Checks only at the end of the string so names like "base64encoder" are
 /// left intact. Ordered from most-specific to least-specific to avoid
 /// partial overwrites.
-pub fn strip_64_suffix(name: &str) -> CompactString {
-    // Must be checked before the shorter patterns they contain.
-    for suffix in [".x64", "_64", "x64", "64"] {
-        if let Some(stripped) = name.strip_suffix(suffix) {
-            return CompactString::from(stripped);
+#[inline]
+pub fn strip_64_suffix(name: &str) -> &str {
+    // Fast path: every target suffix ends with "64", so bail early when
+    // the name cannot possibly match any of them.
+    let b = name.as_bytes();
+    if b.len() >= 2 && b[b.len() - 2] == b'6' && b[b.len() - 1] == b'4' {
+        // Check from most-specific to least-specific to avoid partial overwrites.
+        if let Some(s) = name.strip_suffix(".x64") {
+            return s;
         }
+        if let Some(s) = name.strip_suffix("_64") {
+            return s;
+        }
+        if let Some(s) = name.strip_suffix("x64") {
+            return s;
+        }
+        // Bare "64" is the catch-all (always matches given the guard above).
+        return &name[..name.len() - 2];
     }
-    CompactString::from(name)
+    name
 }
 
 /// Extract the last path component from a Unix or Windows path.
@@ -493,9 +524,21 @@ pub fn strip_64_suffix(name: &str) -> CompactString {
 /// Returns an empty string for paths that consist entirely of separators,
 /// and the full path unchanged when no separator is present.
 pub fn path_filename(path: &str) -> &str {
-    path.split(['/', '\\'])
-        .rfind(|s| !s.is_empty())
-        .unwrap_or("")
+    let bytes = path.as_bytes();
+    // Skip trailing separators from the end.
+    let mut end = bytes.len();
+    while end > 0 && matches!(bytes[end - 1], b'/' | b'\\') {
+        end -= 1;
+    }
+    if end == 0 {
+        return "";
+    }
+    // Scan backwards to find the separator before the filename.
+    let mut start = end;
+    while start > 0 && !matches!(bytes[start - 1], b'/' | b'\\') {
+        start -= 1;
+    }
+    &path[start..end]
 }
 
 /// Return the first `DetectableEntry` whose executable list matches `path` / `args`.
