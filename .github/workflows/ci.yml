@@ -24,13 +24,22 @@ jobs:
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
+    permissions:
+       security-events: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Setup rust
         uses: moonrepo/setup-rust@abb2d32350334249b178c401e5ec5836e0cd88d3 # v1.3.0
         with:
           components: clippy
-      - run: cargo clippy --all-targets --all-features
+          bins: clippy-sarif,sarif-fmt
+      - run: cargo clippy --all-targets --all-features --message-format=json | clippy-sarif | tee clippy-results.sarif | sarif-fmt
+        continue-on-error: true
+      - name: Upload analysis results to GitHub
+        uses: github/codeql-action/upload-sarif@9e0d7b8d25671d64c341c19c0152d693099fb5ba # v4.35.5
+        with:
+          sarif_file: clippy-results.sarif
+          wait-for-processing: true
 
   nextest:
     name: Tests (nextest)
