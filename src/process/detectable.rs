@@ -5,7 +5,6 @@ use std::time::Duration;
 use ahash::AHashMap;
 use compact_str::CompactString;
 use fst::Set;
-use memchr::{memchr2_iter, memrchr2};
 use redb::{Database, ReadTransaction, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
@@ -458,27 +457,19 @@ fn archived_match(archived: &ArchivedDetectableEntry, path: &str, args: &[&str])
 /// variants of each, to match entries like `csgo`, `game/csgo`, `hl2/game/csgo`, …
 pub fn path_variants(path: &str) -> SmallVec<[CompactString; 8]> {
     // Support both Unix `/` and Windows `\` separators.
-    let mut parts: SmallVec<[&str; 16]> = SmallVec::new();
-    let mut start = 0;
-    for sep_idx in memchr2_iter(b'/', b'\\', path.as_bytes()) {
-        if start != sep_idx {
-            parts.push(&path[start..sep_idx]);
-        }
-        start = sep_idx + 1;
-    }
-    if start < path.len() {
-        parts.push(&path[start..]);
-    }
-
+    let parts: SmallVec<[&str; 16]> = path.split(['/', '\\']).filter(|s| !s.is_empty()).collect();
     let mut variants: SmallVec<[CompactString; 8]> = SmallVec::new();
 
     let start = if parts.len() > 4 { parts.len() - 4 } else { 0 };
     for i in start..parts.len() {
         let suffix = parts[i..].join("/");
-        let cleaned = strip_64_suffix(&suffix);
         variants.push(CompactString::from(suffix.as_str()));
-        if cleaned != suffix {
-            variants.push(cleaned);
+        // All 64-bit suffixes end with "64"; skip the allocation when impossible.
+        if suffix.ends_with("64") {
+            let cleaned = strip_64_suffix(&suffix);
+            if cleaned != suffix {
+                variants.push(cleaned);
+            }
         }
     }
 
@@ -491,14 +482,26 @@ pub fn path_variants(path: &str) -> SmallVec<[CompactString; 8]> {
 /// left intact. Ordered from most-specific to least-specific to avoid
 /// partial overwrites.
 pub fn strip_64_suffix(name: &str) -> CompactString {
-    // Must be checked before the shorter patterns they contain.
-    for suffix in [".x64", "_64", "x64", "64"] {
-        if let Some(stripped) = name.strip_suffix(suffix) {
-            return CompactString::from(stripped);
+    // Fast path: every target suffix ends with "64", so bail early when
+    // the name cannot possibly match any of them.
+    let b = name.as_bytes();
+    if b.len() >= 2 && b[b.len() - 2] == b'6' && b[b.len() - 1] == b'4' {
+        // Check from most-specific to least-specific to avoid partial overwrites.
+        if let Some(s) = name.strip_suffix(".x64") {
+            return CompactString::from(s);
         }
+        if let Some(s) = name.strip_suffix("_64") {
+            return CompactString::from(s);
+        }
+        if let Some(s) = name.strip_suffix("x64") {
+            return CompactString::from(s);
+        }
+        // Bare "64" is the catch-all (always matches given the guard above).
+        return CompactString::from(&name[..name.len() - 2]);
     }
     CompactString::from(name)
 }
+
 
 /// Extract the last path component from a Unix or Windows path.
 ///
@@ -506,11 +509,19 @@ pub fn strip_64_suffix(name: &str) -> CompactString {
 /// and the full path unchanged when no separator is present.
 pub fn path_filename(path: &str) -> &str {
     let bytes = path.as_bytes();
-    let end = match bytes.iter().rposition(|&b| b != b'/' && b != b'\\') {
-        Some(idx) => idx + 1,
-        None => return "",
-    };
-    let start = memrchr2(b'/', b'\\', &bytes[..end]).map_or(0, |idx| idx + 1);
+    // Skip trailing separators from the end.
+    let mut end = bytes.len();
+    while end > 0 && matches!(bytes[end - 1], b'/' | b'\\') {
+        end -= 1;
+    }
+    if end == 0 {
+        return "";
+    }
+    // Scan backwards to find the separator before the filename.
+    let mut start = end;
+    while start > 0 && !matches!(bytes[start - 1], b'/' | b'\\') {
+        start -= 1;
+    }
     &path[start..end]
 }
 
