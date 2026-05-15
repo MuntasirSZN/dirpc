@@ -455,21 +455,36 @@ fn archived_match(archived: &ArchivedDetectableEntry, path: &str, args: &[&str])
 ///
 /// Produces up to 4 trailing path components joined with `/`, plus de-64-bit-ified
 /// variants of each, to match entries like `csgo`, `game/csgo`, `hl2/game/csgo`, …
+///
+/// Builds the longest suffix once and derives shorter suffixes as substrings,
+/// eliminating repeated `join("/")` heap allocations.
 pub fn path_variants(path: &str) -> SmallVec<[CompactString; 8]> {
     // Support both Unix `/` and Windows `\` separators.
     let parts: SmallVec<[&str; 16]> = path.split(['/', '\\']).filter(|s| !s.is_empty()).collect();
     let mut variants: SmallVec<[CompactString; 8]> = SmallVec::new();
 
     let start = if parts.len() > 4 { parts.len() - 4 } else { 0 };
-    for i in start..parts.len() {
-        let suffix = parts[i..].join("/");
-        variants.push(CompactString::from(suffix.as_str()));
-        // All 64-bit suffixes end with "64"; skip the allocation when impossible.
+
+    if start >= parts.len() {
+        return variants;
+    }
+
+    // Build the longest suffix once; derive shorter suffixes as substrings.
+    let full = parts[start..].join("/");
+    let mut offset = 0;
+    for _ in start..parts.len() {
+        let suffix = &full[offset..];
+        variants.push(CompactString::from(suffix));
+        // All 64-bit suffixes end with "64"; skip when impossible.
         if suffix.ends_with("64") {
-            let cleaned = strip_64_suffix(&suffix);
-            if cleaned != suffix {
-                variants.push(cleaned);
+            let cleaned = strip_64_suffix(suffix);
+            if cleaned.len() < suffix.len() {
+                variants.push(CompactString::from(cleaned));
             }
+        }
+        // Advance past the next '/' separator to get the next shorter suffix.
+        if let Some(pos) = suffix.find('/') {
+            offset += pos + 1;
         }
     }
 
@@ -478,30 +493,31 @@ pub fn path_variants(path: &str) -> SmallVec<[CompactString; 8]> {
 
 /// Remove common 64-bit marker suffixes from a name.
 ///
+/// Returns a subslice of the input with zero allocation.
 /// Checks only at the end of the string so names like "base64encoder" are
 /// left intact. Ordered from most-specific to least-specific to avoid
 /// partial overwrites.
-pub fn strip_64_suffix(name: &str) -> CompactString {
+#[inline]
+pub fn strip_64_suffix(name: &str) -> &str {
     // Fast path: every target suffix ends with "64", so bail early when
     // the name cannot possibly match any of them.
     let b = name.as_bytes();
     if b.len() >= 2 && b[b.len() - 2] == b'6' && b[b.len() - 1] == b'4' {
         // Check from most-specific to least-specific to avoid partial overwrites.
         if let Some(s) = name.strip_suffix(".x64") {
-            return CompactString::from(s);
+            return s;
         }
         if let Some(s) = name.strip_suffix("_64") {
-            return CompactString::from(s);
+            return s;
         }
         if let Some(s) = name.strip_suffix("x64") {
-            return CompactString::from(s);
+            return s;
         }
         // Bare "64" is the catch-all (always matches given the guard above).
-        return CompactString::from(&name[..name.len() - 2]);
+        return &name[..name.len() - 2];
     }
-    CompactString::from(name)
+    name
 }
-
 
 /// Extract the last path component from a Unix or Windows path.
 ///
