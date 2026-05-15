@@ -5,6 +5,7 @@ use std::time::Duration;
 use ahash::AHashMap;
 use compact_str::CompactString;
 use fst::Set;
+use memchr::{memchr2_iter, memrchr2};
 use redb::{Database, ReadTransaction, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
@@ -457,7 +458,18 @@ fn archived_match(archived: &ArchivedDetectableEntry, path: &str, args: &[&str])
 /// variants of each, to match entries like `csgo`, `game/csgo`, `hl2/game/csgo`, …
 pub fn path_variants(path: &str) -> SmallVec<[CompactString; 8]> {
     // Support both Unix `/` and Windows `\` separators.
-    let parts: SmallVec<[&str; 16]> = path.split(['/', '\\']).filter(|s| !s.is_empty()).collect();
+    let mut parts: SmallVec<[&str; 16]> = SmallVec::new();
+    let mut start = 0;
+    for sep_idx in memchr2_iter(b'/', b'\\', path.as_bytes()) {
+        if start != sep_idx {
+            parts.push(&path[start..sep_idx]);
+        }
+        start = sep_idx + 1;
+    }
+    if start < path.len() {
+        parts.push(&path[start..]);
+    }
+
     let mut variants: SmallVec<[CompactString; 8]> = SmallVec::new();
 
     let start = if parts.len() > 4 { parts.len() - 4 } else { 0 };
@@ -493,9 +505,13 @@ pub fn strip_64_suffix(name: &str) -> CompactString {
 /// Returns an empty string for paths that consist entirely of separators,
 /// and the full path unchanged when no separator is present.
 pub fn path_filename(path: &str) -> &str {
-    path.split(['/', '\\'])
-        .rfind(|s| !s.is_empty())
-        .unwrap_or("")
+    let bytes = path.as_bytes();
+    let end = match bytes.iter().rposition(|&b| b != b'/' && b != b'\\') {
+        Some(idx) => idx + 1,
+        None => return "",
+    };
+    let start = memrchr2(b'/', b'\\', &bytes[..end]).map_or(0, |idx| idx + 1);
+    &path[start..end]
 }
 
 /// Return the first `DetectableEntry` whose executable list matches `path` / `args`.

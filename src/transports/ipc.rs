@@ -28,7 +28,9 @@ pub fn decode(data: &[u8]) -> Option<(i32, String)> {
     if data.len() < 8 + length {
         return None;
     }
-    let body = std::str::from_utf8(&data[8..8 + length]).ok()?.to_string();
+    let body = simdutf8::basic::from_utf8(&data[8..8 + length])
+        .ok()?
+        .to_string();
     Some((opcode, body))
 }
 

@@ -66,6 +66,15 @@ fn test_ipc_decode_truncated_body() {
 }
 
 #[test]
+fn test_ipc_decode_invalid_utf8() {
+    let mut buf = Vec::new();
+    buf.extend_from_slice(&(IpcOpcode::Frame as i32).to_le_bytes());
+    buf.extend_from_slice(&(2_i32).to_le_bytes());
+    buf.extend_from_slice(&[0xC3, 0x28]); // invalid UTF-8 sequence
+    assert!(decode(&buf).is_none());
+}
+
+#[test]
 fn test_ipc_opcode_roundtrip() {
     for (n, expected) in [
         (0, IpcOpcode::Handshake),
@@ -440,6 +449,8 @@ fn test_path_filename() {
     assert_eq!(path_filename("/usr/bin/csgo"), "csgo");
     assert_eq!(path_filename(r"C:\games\overwatch.exe"), "overwatch.exe");
     assert_eq!(path_filename("csgo"), "csgo");
+    assert_eq!(path_filename("/usr/bin/csgo///"), "csgo");
+    assert_eq!(path_filename(r"C:\games\overwatch.exe\\"), "overwatch.exe");
     // All-separator paths return empty string.
     assert_eq!(path_filename("///"), "");
     assert_eq!(path_filename(""), "");
