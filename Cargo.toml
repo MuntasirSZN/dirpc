@@ -16,12 +16,16 @@ tokio = { version = "1.52", features = [
   "io-util",
   "parking_lot",
 ] }
-sockudo-ws = { version = "1.7.4", features = [
+sockudo-ws = { version = "1.7.4", default-features = false, features = [
+  "simd",
   "avx2",
   "avx512",
   "neon",
+  "tokio-runtime",
+  "permessage-deflate",
   "rustls-platform-verifier",
   "aws_lc_rs",
+  "fastrand",
 ] }
 bytes = "1"
 serde = { version = "1", features = ["derive"] }

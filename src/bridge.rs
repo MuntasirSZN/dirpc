@@ -114,7 +114,7 @@ async fn do_handshake(mut stream: TcpStream) -> anyhow::Result<TcpStream> {
 
 async fn handle_client(stream: TcpStream, state: Arc<BridgeState>) -> anyhow::Result<()> {
     let stream = do_handshake(stream).await?;
-    let ws = WebSocketStream::server(stream, Config::default());
+    let ws = WebSocketStream::server(stream, Config::uws_defaults());
     let (mut reader, mut writer) = ws.split();
 
     let mut rx = state.tx.subscribe();

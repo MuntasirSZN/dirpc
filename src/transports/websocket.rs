@@ -151,7 +151,7 @@ async fn do_handshake(mut stream: TcpStream) -> anyhow::Result<(TcpStream, Strin
 async fn handle_connection(stream: TcpStream, state: Arc<ServerState>) -> anyhow::Result<()> {
     let (stream, client_id) = do_handshake(stream).await?;
 
-    let ws = WebSocketStream::server(stream, Config::default());
+    let ws = WebSocketStream::server(stream, Config::uws_defaults());
     let (mut reader, mut writer) = ws.split();
 
     let socket_id = state.next_id();
