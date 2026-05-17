@@ -60,7 +60,7 @@ pub fn sample_entries() -> Vec<DetectableEntry> {
 
 pub fn get_ws_config() -> sockudo_ws::Config {
     let deflate = sockudo_ws::deflate::DeflateConfig::low_memory();
-    let defaults = Config::default();
+    let defaults = sockudo_ws::Config::default();
     sockudo_ws::Config::builder()
         .max_message_size(defaults.max_message_size)
         .max_frame_size(defaults.max_frame_size)
