@@ -3,7 +3,7 @@ use std::sync::Arc;
 use bytes::BytesMut;
 use sockudo_ws::handshake::{build_response, generate_accept_key, parse_request};
 use sockudo_ws::protocol::Message;
-use sockudo_ws::{Config, WebSocketStream};
+use sockudo_ws::WebSocketStream;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{debug, info, warn};
@@ -151,7 +151,7 @@ async fn do_handshake(mut stream: TcpStream) -> anyhow::Result<(TcpStream, Strin
 async fn handle_connection(stream: TcpStream, state: Arc<ServerState>) -> anyhow::Result<()> {
     let (stream, client_id) = do_handshake(stream).await?;
 
-    let ws = WebSocketStream::server(stream, Config::uws_defaults());
+    let ws = WebSocketStream::server(stream, crate::get_ws_config());
     let (mut reader, mut writer) = ws.split();
 
     let socket_id = state.next_id();

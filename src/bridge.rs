@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use crate::HashMap;
 use bytes::BytesMut;
+use sockudo_ws::WebSocketStream;
 use sockudo_ws::handshake::{build_response, generate_accept_key, parse_request};
 use sockudo_ws::protocol::Message;
-use sockudo_ws::{Config, WebSocketStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
@@ -114,7 +114,7 @@ async fn do_handshake(mut stream: TcpStream) -> anyhow::Result<TcpStream> {
 
 async fn handle_client(stream: TcpStream, state: Arc<BridgeState>) -> anyhow::Result<()> {
     let stream = do_handshake(stream).await?;
-    let ws = WebSocketStream::server(stream, Config::uws_defaults());
+    let ws = WebSocketStream::server(stream, crate::get_ws_config());
     let (mut reader, mut writer) = ws.split();
 
     let mut rx = state.tx.subscribe();

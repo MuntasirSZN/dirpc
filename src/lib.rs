@@ -57,3 +57,20 @@ pub fn sample_entries() -> Vec<DetectableEntry> {
         },
     ]
 }
+
+pub fn get_ws_config() -> sockudo_ws::Config {
+    let deflate = sockudo_ws::deflate::DeflateConfig::low_memory();
+    let defaults = Config::default();
+    sockudo_ws::Config::builder()
+        .max_message_size(defaults.max_message_size)
+        .max_frame_size(defaults.max_frame_size)
+        .write_buffer_size(defaults.write_buffer_size)
+        .compression(sockudo_ws::Compression::Shared)
+        .idle_timeout(defaults.idle_timeout)
+        .max_backpressure(defaults.max_backpressure)
+        .auto_ping(defaults.auto_ping)
+        .ping_interval(defaults.ping_interval)
+        .deflate_config(deflate)
+        .http3_enable_0rtt(true)
+        .build()
+}
