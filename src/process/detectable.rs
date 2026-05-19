@@ -43,7 +43,7 @@ pub struct DetectableEntry {
 }
 
 /// Discord's detectable-applications endpoint.
-const DETECTABLE_URL: &str = "https://discord.com/api/v9/applications/detectable";
+const DETECTABLE_URL: &str = "https://discord.com/api/v10/applications/detectable";
 
 /// redb table: app_id → rkyv-serialised `DetectableEntry` bytes.
 const APPS_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("apps");
@@ -579,4 +579,17 @@ pub fn match_process<'a>(
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DETECTABLE_URL;
+
+    #[test]
+    fn detectable_url_uses_discord_v10_api() {
+        assert_eq!(
+            DETECTABLE_URL,
+            "https://discord.com/api/v10/applications/detectable"
+        );
+    }
 }
