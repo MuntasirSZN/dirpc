@@ -109,8 +109,9 @@ async fn fetch_detectable(
     }
 
     let resp = req.send().await?;
+    let status = resp.status();
 
-    if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
+    if status == reqwest::StatusCode::NOT_MODIFIED {
         return Ok(None);
     }
 
@@ -120,9 +121,41 @@ async fn fetch_detectable(
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
 
-    let entries = resp.json().await?;
+    let body = resp.bytes().await?;
+    if !status.is_success() {
+        let body_preview = String::from_utf8_lossy(&body);
+        anyhow::bail!(
+            "detectable API request failed with status {status}: {}",
+            body_preview
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .chars()
+                .take(200)
+                .collect::<String>()
+        );
+    }
+
+    let entries = parse_detectable_entries(&body)?;
 
     Ok(Some((entries, new_etag)))
+}
+
+fn parse_detectable_entries(body: &[u8]) -> anyhow::Result<Vec<DetectableEntry>> {
+    if let Ok(entries) = serde_json::from_slice::<Vec<DetectableEntry>>(body) {
+        return Ok(entries);
+    }
+
+    #[derive(Deserialize)]
+    struct WrappedApplications {
+        applications: Vec<DetectableEntry>,
+    }
+
+    if let Ok(wrapped) = serde_json::from_slice::<WrappedApplications>(body) {
+        return Ok(wrapped.applications);
+    }
+
+    anyhow::bail!("unexpected detectable API payload shape")
 }
 
 /// Fetch a fresh detectable entries list from Discord (or return empty on failure).
@@ -583,7 +616,7 @@ pub fn match_process<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::DETECTABLE_URL;
+    use super::{DETECTABLE_URL, parse_detectable_entries};
 
     #[test]
     fn detectable_url_uses_discord_v10_api() {
@@ -591,5 +624,22 @@ mod tests {
             DETECTABLE_URL,
             "https://discord.com/api/v10/applications/detectable"
         );
+    }
+
+    #[test]
+    fn parse_detectable_entries_accepts_array_payload() {
+        let body =
+            br#"[{"id":"1","name":"Game","executables":[{"name":"game","is_launcher":false}]}]"#;
+        let entries = parse_detectable_entries(body).expect("array payload should parse");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, "1");
+    }
+
+    #[test]
+    fn parse_detectable_entries_accepts_wrapped_payload() {
+        let body = br#"{"applications":[{"id":"1","name":"Game","executables":[{"name":"game","is_launcher":false}]}]}"#;
+        let entries = parse_detectable_entries(body).expect("wrapped payload should parse");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, "1");
     }
 }
