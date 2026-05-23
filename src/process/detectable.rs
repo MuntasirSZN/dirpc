@@ -155,10 +155,10 @@ fn parse_detectable_entries(body: &[u8]) -> anyhow::Result<Vec<DetectableEntry>>
         return Ok(wrapped.applications);
     }
 
-    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) {
-        if let Some(entries) = parse_entries_from_value(&value) {
-            return Ok(entries);
-        }
+    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(body)
+        && let Some(entries) = parse_entries_from_value(&value)
+    {
+        return Ok(entries);
     }
 
     anyhow::bail!("unexpected detectable API payload shape")
