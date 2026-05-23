@@ -61,6 +61,13 @@ fn extract_origin(buf: &[u8]) -> &str {
         .unwrap_or("")
 }
 
+fn http_error_response(status: &str, body: &str) -> String {
+    format!(
+        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+}
+
 /// Try to bind an HTTP/WebSocket server on the first available port in 6463–6472.
 pub async fn start_ws_server(state: Arc<ServerState>) -> std::io::Result<()> {
     for port in 6463u16..=6472 {
@@ -111,9 +118,7 @@ async fn do_handshake(mut stream: TcpStream) -> anyhow::Result<(TcpStream, Strin
 
         if v != Some(1) {
             stream
-                .write_all(
-                    b"HTTP/1.1 400 Bad Request\r\nContent-Length: 12\r\nConnection: close\r\n\r\nv must be 1",
-                )
+                .write_all(http_error_response("400 Bad Request", "v must be 1").as_bytes())
                 .await?;
             return Err(anyhow::anyhow!("WS: v must be 1"));
         }
@@ -121,7 +126,7 @@ async fn do_handshake(mut stream: TcpStream) -> anyhow::Result<(TcpStream, Strin
         if encoding.as_deref() != Some("json") {
             stream
                 .write_all(
-                    b"HTTP/1.1 400 Bad Request\r\nContent-Length: 21\r\nConnection: close\r\n\r\nencoding must be json",
+                    http_error_response("400 Bad Request", "encoding must be json").as_bytes(),
                 )
                 .await?;
             return Err(anyhow::anyhow!("WS: encoding must be json"));
@@ -131,9 +136,7 @@ async fn do_handshake(mut stream: TcpStream) -> anyhow::Result<(TcpStream, Strin
         let origin = extract_origin(&buf);
         if !validate_origin(origin) {
             stream
-                .write_all(
-                    b"HTTP/1.1 403 Forbidden\r\nContent-Length: 18\r\nConnection: close\r\n\r\norigin not allowed",
-                )
+                .write_all(http_error_response("403 Forbidden", "origin not allowed").as_bytes())
                 .await?;
             return Err(anyhow::anyhow!("WS: origin not allowed"));
         }
@@ -210,4 +213,16 @@ async fn handle_connection(stream: TcpStream, state: Arc<ServerState>) -> anyhow
     state.unregister_socket(socket_id).await;
     debug!("WS disconnected: socket_id={}", socket_id);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::http_error_response;
+
+    #[test]
+    fn test_http_error_response_has_correct_content_length() {
+        let response = http_error_response("400 Bad Request", "v must be 1");
+        assert!(response.contains("\r\nContent-Length: 11\r\n"));
+        assert!(response.ends_with("\r\n\r\nv must be 1"));
+    }
 }
