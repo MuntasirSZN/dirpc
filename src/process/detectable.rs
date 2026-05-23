@@ -155,7 +155,37 @@ fn parse_detectable_entries(body: &[u8]) -> anyhow::Result<Vec<DetectableEntry>>
         return Ok(wrapped.applications);
     }
 
+    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) {
+        if let Some(entries) = parse_entries_from_value(&value) {
+            return Ok(entries);
+        }
+    }
+
     anyhow::bail!("unexpected detectable API payload shape")
+}
+
+fn parse_entries_from_value(value: &serde_json::Value) -> Option<Vec<DetectableEntry>> {
+    match value {
+        serde_json::Value::Array(_) => serde_json::from_value(value.clone()).ok(),
+        serde_json::Value::Object(map) => {
+            for key in ["applications", "data", "results"] {
+                if let Some(child) = map.get(key)
+                    && let Some(entries) = parse_entries_from_value(child)
+                {
+                    return Some(entries);
+                }
+            }
+
+            for child in map.values() {
+                if let Some(entries) = parse_entries_from_value(child) {
+                    return Some(entries);
+                }
+            }
+
+            None
+        }
+        _ => None,
+    }
 }
 
 /// Fetch a fresh detectable entries list from Discord (or return empty on failure).
@@ -639,6 +669,23 @@ mod tests {
     fn parse_detectable_entries_accepts_wrapped_payload() {
         let body = br#"{"applications":[{"id":"1","name":"Game","executables":[{"name":"game","is_launcher":false}]}]}"#;
         let entries = parse_detectable_entries(body).expect("wrapped payload should parse");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, "1");
+    }
+
+    #[test]
+    fn parse_detectable_entries_accepts_data_applications_payload() {
+        let body = br#"{"data":{"applications":[{"id":"1","name":"Game","executables":[{"name":"game","is_launcher":false}]}]}}"#;
+        let entries =
+            parse_detectable_entries(body).expect("data.applications payload should parse");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, "1");
+    }
+
+    #[test]
+    fn parse_detectable_entries_accepts_results_payload() {
+        let body = br#"{"results":[{"id":"1","name":"Game","executables":[{"name":"game","is_launcher":false}]}],"total":1}"#;
+        let entries = parse_detectable_entries(body).expect("results payload should parse");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].id, "1");
     }
