@@ -187,18 +187,16 @@ fn parse_entries_from_value(value: &serde_json::Value) -> Option<Vec<DetectableE
 }
 
 fn parse_entries_from_array(items: &[serde_json::Value]) -> Option<Vec<DetectableEntry>> {
-    if let Ok(entries) =
-        serde_json::from_value::<Vec<DetectableEntry>>(serde_json::Value::Array(items.to_vec()))
-    {
-        return Some(entries);
-    }
-
     let entries: Vec<DetectableEntry> = items
         .iter()
-        .filter_map(|item| serde_json::from_value::<DetectableEntry>(item.clone()).ok())
+        .filter_map(|item| DetectableEntry::deserialize(item).ok())
         .collect();
 
-    (!entries.is_empty()).then_some(entries)
+    if items.is_empty() || !entries.is_empty() {
+        Some(entries)
+    } else {
+        None
+    }
 }
 
 fn describe_payload_shape(body: &[u8]) -> String {
@@ -251,7 +249,7 @@ fn compact_whitespace_preview(input: &str, max_chars: usize) -> String {
     }
 
     let mut out = String::new();
-    let mut chars_used = 0usize;
+    let mut chars_used = 0;
 
     for token in input.split_whitespace() {
         if !out.is_empty() {
