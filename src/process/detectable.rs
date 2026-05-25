@@ -1,6 +1,7 @@
 use crate::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Duration;
+use std::{collections::BTreeSet, fmt::Write as _};
 
 use ahash::AHashMap;
 use compact_str::CompactString;
@@ -161,7 +162,10 @@ fn parse_detectable_entries(body: &[u8]) -> anyhow::Result<Vec<DetectableEntry>>
         return Ok(entries);
     }
 
-    anyhow::bail!("unexpected detectable API payload shape")
+    anyhow::bail!(
+        "unexpected detectable API payload shape ({})",
+        describe_payload_shape(body)
+    )
 }
 
 fn parse_entries_from_value(value: &serde_json::Value) -> Option<Vec<DetectableEntry>> {
@@ -185,6 +189,53 @@ fn parse_entries_from_value(value: &serde_json::Value) -> Option<Vec<DetectableE
             None
         }
         _ => None,
+    }
+}
+
+fn describe_payload_shape(body: &[u8]) -> String {
+    match serde_json::from_slice::<serde_json::Value>(body) {
+        Ok(serde_json::Value::Array(values)) => {
+            let mut msg = format!("top-level array(len={})", values.len());
+            if let Some(first) = values.first() {
+                let _ = write!(msg, ", first={}", describe_json_value(first));
+            }
+            msg
+        }
+        Ok(serde_json::Value::Object(map)) => {
+            let keys: BTreeSet<_> = map.keys().map(String::as_str).collect();
+            let mut msg = format!("top-level object(keys={:?})", keys);
+            for key in ["applications", "data", "results"] {
+                if let Some(child) = map.get(key) {
+                    let _ = write!(msg, ", {key}={}", describe_json_value(child));
+                }
+            }
+            msg
+        }
+        Ok(other) => format!("top-level {}", describe_json_value(&other)),
+        Err(_) => {
+            let preview = String::from_utf8_lossy(body)
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!(
+                "non-JSON response preview={:?}",
+                preview.chars().take(200).collect::<String>()
+            )
+        }
+    }
+}
+
+fn describe_json_value(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Null => "null".to_owned(),
+        serde_json::Value::Bool(_) => "boolean".to_owned(),
+        serde_json::Value::Number(_) => "number".to_owned(),
+        serde_json::Value::String(_) => "string".to_owned(),
+        serde_json::Value::Array(items) => format!("array(len={})", items.len()),
+        serde_json::Value::Object(map) => {
+            let keys: BTreeSet<_> = map.keys().map(String::as_str).collect();
+            format!("object(keys={keys:?})")
+        }
     }
 }
 
@@ -688,5 +739,14 @@ mod tests {
         let entries = parse_detectable_entries(body).expect("results payload should parse");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].id, "1");
+    }
+
+    #[test]
+    fn parse_detectable_entries_reports_unexpected_shape_details() {
+        let body = br#"{"payload":{"items":[{"slug":"game"}]}}"#;
+        let err = parse_detectable_entries(body).expect_err("payload should fail to parse");
+        let msg = err.to_string();
+        assert!(msg.contains("unexpected detectable API payload shape"));
+        assert!(msg.contains(r#"top-level object(keys={"payload"})"#));
     }
 }
