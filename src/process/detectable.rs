@@ -1,6 +1,7 @@
 use crate::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Duration;
+use std::{collections::BTreeSet, fmt::Write as _};
 
 use ahash::AHashMap;
 use compact_str::CompactString;
@@ -109,8 +110,9 @@ async fn fetch_detectable(
     }
 
     let resp = req.send().await?;
+    let status = resp.status();
 
-    if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
+    if status == reqwest::StatusCode::NOT_MODIFIED {
         return Ok(None);
     }
 
@@ -120,9 +122,154 @@ async fn fetch_detectable(
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
 
-    let entries = resp.json().await?;
+    let body = resp.bytes().await?;
+    if !status.is_success() {
+        let body_preview = String::from_utf8_lossy(&body);
+        anyhow::bail!(
+            "detectable API request failed with status {status}: {}",
+            compact_whitespace_preview(&body_preview, 200)
+        );
+    }
+
+    let entries = parse_detectable_entries(&body)?;
 
     Ok(Some((entries, new_etag)))
+}
+
+fn parse_detectable_entries(body: &[u8]) -> anyhow::Result<Vec<DetectableEntry>> {
+    if let Ok(entries) = serde_json::from_slice::<Vec<DetectableEntry>>(body) {
+        return Ok(entries);
+    }
+
+    #[derive(Deserialize)]
+    struct WrappedApplications {
+        applications: Vec<DetectableEntry>,
+    }
+
+    if let Ok(wrapped) = serde_json::from_slice::<WrappedApplications>(body) {
+        return Ok(wrapped.applications);
+    }
+
+    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(body)
+        && let Some(entries) = parse_entries_from_value(&value)
+    {
+        return Ok(entries);
+    }
+
+    anyhow::bail!(
+        "unexpected detectable API payload shape ({})",
+        describe_payload_shape(body)
+    )
+}
+
+fn parse_entries_from_value(value: &serde_json::Value) -> Option<Vec<DetectableEntry>> {
+    match value {
+        serde_json::Value::Array(items) => parse_entries_from_array(items),
+        serde_json::Value::Object(map) => {
+            for key in ["applications", "data", "results"] {
+                if let Some(child) = map.get(key)
+                    && let Some(entries) = parse_entries_from_value(child)
+                {
+                    return Some(entries);
+                }
+            }
+
+            for child in map.values() {
+                if let Some(entries) = parse_entries_from_value(child) {
+                    return Some(entries);
+                }
+            }
+
+            None
+        }
+        _ => None,
+    }
+}
+
+fn parse_entries_from_array(items: &[serde_json::Value]) -> Option<Vec<DetectableEntry>> {
+    let entries: Vec<DetectableEntry> = items
+        .iter()
+        .filter_map(|item| DetectableEntry::deserialize(item).ok())
+        .collect();
+
+    if items.is_empty() || !entries.is_empty() {
+        Some(entries)
+    } else {
+        None
+    }
+}
+
+fn describe_payload_shape(body: &[u8]) -> String {
+    match serde_json::from_slice::<serde_json::Value>(body) {
+        Ok(serde_json::Value::Array(values)) => {
+            let mut msg = format!("top-level array(len={})", values.len());
+            if let Some(first) = values.first() {
+                let _ = write!(msg, ", first={}", describe_json_value(first));
+            }
+            msg
+        }
+        Ok(serde_json::Value::Object(map)) => {
+            let keys: BTreeSet<_> = map.keys().map(String::as_str).collect();
+            let mut msg = format!("top-level object(keys={:?})", keys);
+            for key in ["applications", "data", "results"] {
+                if let Some(child) = map.get(key) {
+                    let _ = write!(msg, ", {key}={}", describe_json_value(child));
+                }
+            }
+            msg
+        }
+        Ok(other) => format!("top-level {}", describe_json_value(&other)),
+        Err(_) => {
+            let preview = String::from_utf8_lossy(body).to_string();
+            format!(
+                "non-JSON response preview={:?}",
+                compact_whitespace_preview(&preview, 200)
+            )
+        }
+    }
+}
+
+fn describe_json_value(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Null => "null".to_owned(),
+        serde_json::Value::Bool(_) => "boolean".to_owned(),
+        serde_json::Value::Number(_) => "number".to_owned(),
+        serde_json::Value::String(_) => "string".to_owned(),
+        serde_json::Value::Array(items) => format!("array(len={})", items.len()),
+        serde_json::Value::Object(map) => {
+            let keys: BTreeSet<_> = map.keys().map(String::as_str).collect();
+            format!("object(keys={keys:?})")
+        }
+    }
+}
+
+fn compact_whitespace_preview(input: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+
+    let mut out = String::new();
+    let mut chars_used = 0;
+
+    for token in input.split_whitespace() {
+        if !out.is_empty() {
+            if chars_used >= max_chars {
+                break;
+            }
+            out.push(' ');
+            chars_used += 1;
+        }
+
+        for ch in token.chars() {
+            if chars_used >= max_chars {
+                break;
+            }
+            out.push(ch);
+            chars_used += 1;
+        }
+    }
+
+    out
 }
 
 /// Fetch a fresh detectable entries list from Discord (or return empty on failure).
@@ -583,7 +730,7 @@ pub fn match_process<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::DETECTABLE_URL;
+    use super::{DETECTABLE_URL, parse_detectable_entries};
 
     #[test]
     fn detectable_url_uses_discord_v10_api() {
@@ -591,5 +738,61 @@ mod tests {
             DETECTABLE_URL,
             "https://discord.com/api/v10/applications/detectable"
         );
+    }
+
+    #[test]
+    fn parse_detectable_entries_accepts_array_payload() {
+        let body =
+            br#"[{"id":"1","name":"Game","executables":[{"name":"game","is_launcher":false}]}]"#;
+        let entries = parse_detectable_entries(body).expect("array payload should parse");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, "1");
+    }
+
+    #[test]
+    fn parse_detectable_entries_accepts_wrapped_payload() {
+        let body = br#"{"applications":[{"id":"1","name":"Game","executables":[{"name":"game","is_launcher":false}]}]}"#;
+        let entries = parse_detectable_entries(body).expect("wrapped payload should parse");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, "1");
+    }
+
+    #[test]
+    fn parse_detectable_entries_accepts_data_applications_payload() {
+        let body = br#"{"data":{"applications":[{"id":"1","name":"Game","executables":[{"name":"game","is_launcher":false}]}]}}"#;
+        let entries =
+            parse_detectable_entries(body).expect("data.applications payload should parse");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, "1");
+    }
+
+    #[test]
+    fn parse_detectable_entries_accepts_results_payload() {
+        let body = br#"{"results":[{"id":"1","name":"Game","executables":[{"name":"game","is_launcher":false}]}],"total":1}"#;
+        let entries = parse_detectable_entries(body).expect("results payload should parse");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, "1");
+    }
+
+    #[test]
+    fn parse_detectable_entries_reports_unexpected_shape_details() {
+        let body = br#"{"payload":{"items":[{"slug":"game"}]}}"#;
+        let err = parse_detectable_entries(body).expect_err("payload should fail to parse");
+        let msg = err.to_string();
+        assert!(msg.contains("unexpected detectable API payload shape"));
+        assert!(msg.contains(r#"top-level object(keys={"payload"})"#));
+    }
+
+    #[test]
+    fn parse_detectable_entries_skips_invalid_array_items() {
+        let body = br#"[
+            {"id":"1","name":"Game","executables":[{"name":"game","is_launcher":false}]},
+            {"id":"broken","name":"Broken","executables":"invalid"},
+            {"id":"2","name":"Game2","executables":[{"name":"game2","is_launcher":false}]}
+        ]"#;
+        let entries = parse_detectable_entries(body).expect("valid entries should still parse");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].id, "1");
+        assert_eq!(entries[1].id, "2");
     }
 }
