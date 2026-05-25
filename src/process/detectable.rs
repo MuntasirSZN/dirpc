@@ -164,7 +164,7 @@ fn parse_detectable_entries(body: &[u8]) -> anyhow::Result<Vec<DetectableEntry>>
 
 fn parse_entries_from_value(value: &serde_json::Value) -> Option<Vec<DetectableEntry>> {
     match value {
-        serde_json::Value::Array(_) => serde_json::from_value(value.clone()).ok(),
+        serde_json::Value::Array(items) => parse_entries_from_array(items),
         serde_json::Value::Object(map) => {
             for key in ["applications", "data", "results"] {
                 if let Some(child) = map.get(key)
@@ -184,6 +184,21 @@ fn parse_entries_from_value(value: &serde_json::Value) -> Option<Vec<DetectableE
         }
         _ => None,
     }
+}
+
+fn parse_entries_from_array(items: &[serde_json::Value]) -> Option<Vec<DetectableEntry>> {
+    if let Ok(entries) =
+        serde_json::from_value::<Vec<DetectableEntry>>(serde_json::Value::Array(items.to_vec()))
+    {
+        return Some(entries);
+    }
+
+    let entries: Vec<DetectableEntry> = items
+        .iter()
+        .filter_map(|item| serde_json::from_value::<DetectableEntry>(item.clone()).ok())
+        .collect();
+
+    (!entries.is_empty()).then_some(entries)
 }
 
 fn describe_payload_shape(body: &[u8]) -> String {
@@ -253,10 +268,6 @@ fn compact_whitespace_preview(input: &str, max_chars: usize) -> String {
             }
             out.push(ch);
             chars_used += 1;
-        }
-
-        if chars_used >= max_chars {
-            break;
         }
     }
 
@@ -772,5 +783,18 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("unexpected detectable API payload shape"));
         assert!(msg.contains(r#"top-level object(keys={"payload"})"#));
+    }
+
+    #[test]
+    fn parse_detectable_entries_skips_invalid_array_items() {
+        let body = br#"[
+            {"id":"1","name":"Game","executables":[{"name":"game","is_launcher":false}]},
+            {"id":"broken","name":"Broken","executables":"invalid"},
+            {"id":"2","name":"Game2","executables":[{"name":"game2","is_launcher":false}]}
+        ]"#;
+        let entries = parse_detectable_entries(body).expect("valid entries should still parse");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].id, "1");
+        assert_eq!(entries[1].id, "2");
     }
 }
