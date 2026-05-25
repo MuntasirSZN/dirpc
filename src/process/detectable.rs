@@ -127,13 +127,7 @@ async fn fetch_detectable(
         let body_preview = String::from_utf8_lossy(&body);
         anyhow::bail!(
             "detectable API request failed with status {status}: {}",
-            body_preview
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" ")
-                .chars()
-                .take(200)
-                .collect::<String>()
+            compact_whitespace_preview(&body_preview, 200)
         );
     }
 
@@ -213,13 +207,10 @@ fn describe_payload_shape(body: &[u8]) -> String {
         }
         Ok(other) => format!("top-level {}", describe_json_value(&other)),
         Err(_) => {
-            let preview = String::from_utf8_lossy(body)
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" ");
+            let preview = String::from_utf8_lossy(body).to_string();
             format!(
                 "non-JSON response preview={:?}",
-                preview.chars().take(200).collect::<String>()
+                compact_whitespace_preview(&preview, 200)
             )
         }
     }
@@ -237,6 +228,39 @@ fn describe_json_value(value: &serde_json::Value) -> String {
             format!("object(keys={keys:?})")
         }
     }
+}
+
+fn compact_whitespace_preview(input: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+
+    let mut out = String::new();
+    let mut chars_used = 0usize;
+
+    for token in input.split_whitespace() {
+        if !out.is_empty() {
+            if chars_used >= max_chars {
+                break;
+            }
+            out.push(' ');
+            chars_used += 1;
+        }
+
+        for ch in token.chars() {
+            if chars_used >= max_chars {
+                break;
+            }
+            out.push(ch);
+            chars_used += 1;
+        }
+
+        if chars_used >= max_chars {
+            break;
+        }
+    }
+
+    out
 }
 
 /// Fetch a fresh detectable entries list from Discord (or return empty on failure).
