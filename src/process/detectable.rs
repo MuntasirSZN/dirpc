@@ -481,16 +481,28 @@ impl DetectableDb {
     ) -> Option<(CompactString, CompactString)> {
         let variants = path_variants(path);
         let filename = path_filename(path);
+        let exact = if filename.is_empty() {
+            CompactString::default()
+        } else {
+            let mut exact = CompactString::with_capacity(filename.len() + 1);
+            exact.push('>');
+            exact.push_str(filename);
+            exact
+        };
+
+        if !variants
+            .iter()
+            .map(CompactString::as_str)
+            .chain((!exact.is_empty()).then_some(exact.as_str()))
+            .any(|exe_name| self.fst.contains(exe_name.as_bytes()))
+        {
+            return None;
+        }
+
         let read_txn: ReadTransaction = self.db.begin_read().ok()?;
         let apps: redb::ReadOnlyTable<&str, &[u8]> = read_txn.open_table(APPS_TABLE).ok()?;
         let mut seen: AHashSet<CompactString> = AHashSet::default();
         let pin = self.exe_index.pin();
-
-        let mut exact = CompactString::default();
-        if !filename.is_empty() {
-            exact.push('>');
-            exact.push_str(filename);
-        }
 
         for exe_name in variants
             .iter()
