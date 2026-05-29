@@ -168,7 +168,7 @@ pub async fn scan_once(
     }
 
     // Games that disappeared since last scan.
-    let lost: Vec<u32> = active
+    let lost: Box<[u32]> = active
         .keys()
         .filter(|pid| !still_present.contains_key(*pid))
         .copied()
