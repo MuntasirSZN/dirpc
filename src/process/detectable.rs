@@ -1,9 +1,9 @@
-use crate::{HashMap, HashSet};
+use crate::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 use std::{collections::BTreeSet, fmt::Write as _};
 
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 use compact_str::CompactString;
 use fst::Set;
 use redb::{Database, ReadTransaction, ReadableDatabase, ReadableTable, TableDefinition};
@@ -481,69 +481,51 @@ impl DetectableDb {
     ) -> Option<(CompactString, CompactString)> {
         let variants = path_variants(path);
         let filename = path_filename(path);
-
-        // Build the set of FST look-up candidates:
-        //   • regular path variants  (e.g. "csgo", "game/csgo")
-        //   • exact-filename variant  (e.g. ">csgo")
-        let mut candidates: SmallVec<[CompactString; 8]> = variants.clone();
-        if !filename.is_empty() {
-            candidates.push(CompactString::from(format!(">{filename}")));
-        }
-
-        // ── FST pre-filter (in-memory, O(|name|) per candidate) ──────────────
-        let hit_names: SmallVec<[&str; 8]> = candidates
-            .iter()
-            .filter(|c| self.fst.contains(c.as_bytes()))
-            .map(CompactString::as_str)
-            .collect();
-
-        if hit_names.is_empty() {
-            return None;
-        }
-
-        // ── exe_index lookup (in-memory papaya::HashMap, no disk I/O) ────────
-        let seen: HashSet<CompactString> = HashSet::default();
-        let mut app_ids: SmallVec<[CompactString; 8]> = SmallVec::new();
-        {
-            let pin = self.exe_index.pin();
-            for exe_name in &hit_names {
-                if let Some(ids) = pin.get(*exe_name) {
-                    for id in ids {
-                        if seen.pin().insert(id.clone()) {
-                            app_ids.push(id.clone());
-                        }
-                    }
-                }
-            }
-        }
-
-        if app_ids.is_empty() {
-            return None;
-        }
-
-        // ── redb APPS_TABLE lookup (mmap-backed, only on confirmed hits) ──────
         let read_txn: ReadTransaction = self.db.begin_read().ok()?;
         let apps: redb::ReadOnlyTable<&str, &[u8]> = read_txn.open_table(APPS_TABLE).ok()?;
+        let mut seen: AHashSet<CompactString> = AHashSet::default();
+        let pin = self.exe_index.pin();
 
-        // Verify each candidate with the full match logic.
-        for app_id in &app_ids {
-            if let Ok(Some(guard)) = apps.get(app_id.as_str()) {
-                let bytes: &[u8] = guard.value();
+        let mut exact = CompactString::default();
+        if !filename.is_empty() {
+            exact.push('>');
+            exact.push_str(filename);
+        }
 
-                // Copy into a 16-byte-aligned buffer so rkyv can access the
-                // archive safely (redb mmap pages may not satisfy the archived
-                // root's alignment requirement).
-                let mut aligned = rkyv::util::AlignedVec::<RKYV_ALIGNMENT>::new();
-                aligned.extend_from_slice(bytes);
+        for exe_name in variants
+            .iter()
+            .map(CompactString::as_str)
+            .chain((!exact.is_empty()).then_some(exact.as_str()))
+        {
+            if !self.fst.contains(exe_name.as_bytes()) {
+                continue;
+            }
 
-                if let Ok(archived) =
-                    rkyv::access::<ArchivedDetectableEntry, rkyv::rancor::Error>(&aligned)
-                    && archived_match(archived, path, args)
-                {
-                    return Some((
-                        CompactString::from(archived.id.as_str()),
-                        CompactString::from(archived.name.as_str()),
-                    ));
+            if let Some(ids) = pin.get(exe_name) {
+                for app_id in ids {
+                    if !seen.insert(app_id.clone()) {
+                        continue;
+                    }
+
+                    if let Ok(Some(guard)) = apps.get(app_id.as_str()) {
+                        let bytes: &[u8] = guard.value();
+
+                        // Copy into a 16-byte-aligned buffer so rkyv can access the
+                        // archive safely (redb mmap pages may not satisfy the archived
+                        // root's alignment requirement).
+                        let mut aligned = rkyv::util::AlignedVec::<RKYV_ALIGNMENT>::new();
+                        aligned.extend_from_slice(bytes);
+
+                        if let Ok(archived) =
+                            rkyv::access::<ArchivedDetectableEntry, rkyv::rancor::Error>(&aligned)
+                            && archived_match(archived, path, args)
+                        {
+                            return Some((
+                                CompactString::from(archived.id.as_str()),
+                                CompactString::from(archived.name.as_str()),
+                            ));
+                        }
+                    }
                 }
             }
         }

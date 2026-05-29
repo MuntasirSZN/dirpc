@@ -112,7 +112,7 @@ where
         return;
     }
 
-    let client_id = handshake.client_id.clone();
+    let client_id = handshake.client_id;
     let socket_id = state.next_id();
     debug!(
         "IPC HANDSHAKE: client_id={} socket_id={}",

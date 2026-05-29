@@ -102,27 +102,36 @@ impl ServerState {
                     }
                     Some(raw_activity) => {
                         let mut activity = raw_activity.clone();
-                        let mut metadata = serde_json::Map::new();
-                        let mut extra = serde_json::Map::new();
+                        let mut metadata = None;
+                        let mut extra = None;
 
                         // Map buttons: extract labels for the frame, urls for metadata.
                         if let Some(buttons) = activity
                             .as_object()
                             .and_then(|o| o.get("buttons"))
                             .and_then(|b| b.as_array())
-                            .cloned()
                         {
-                            let labels: Vec<Value> = buttons
-                                .iter()
-                                .filter_map(|b| b.get("label").cloned())
-                                .collect();
-                            let urls: Vec<Value> = buttons
-                                .iter()
-                                .filter_map(|b| b.get("url").cloned())
-                                .collect();
+                            let mut labels = Vec::with_capacity(buttons.len());
+                            let mut urls = Vec::with_capacity(buttons.len());
+
+                            for button in buttons {
+                                if let Some(label) = button.get("label") {
+                                    labels.push(label.clone());
+                                }
+                                if let Some(url) = button.get("url") {
+                                    urls.push(url.clone());
+                                }
+                            }
+
                             if !labels.is_empty() {
-                                extra.insert("buttons".to_string(), json!(labels));
-                                metadata.insert("button_urls".to_string(), json!(urls));
+                                extra = Some(serde_json::Map::from_iter([(
+                                    "buttons".to_string(),
+                                    json!(labels),
+                                )]));
+                                metadata = Some(serde_json::Map::from_iter([(
+                                    "button_urls".to_string(),
+                                    json!(urls),
+                                )]));
                             }
                         }
 
@@ -146,15 +155,20 @@ impl ServerState {
                         let mut full = serde_json::Map::new();
                         full.insert("application_id".to_string(), json!(client_id));
                         full.insert("type".to_string(), json!(0u32));
-                        full.insert("metadata".to_string(), Value::Object(metadata));
+                        full.insert(
+                            "metadata".to_string(),
+                            Value::Object(metadata.unwrap_or_default()),
+                        );
                         full.insert("flags".to_string(), json!(flags));
                         if let Some(obj) = activity.as_object() {
                             for (k, v) in obj {
                                 full.insert(k.clone(), v.clone());
                             }
                         }
-                        for (k, v) in &extra {
-                            full.insert(k.clone(), v.clone());
+                        if let Some(extra) = extra {
+                            for (k, v) in extra {
+                                full.insert(k, v);
+                            }
                         }
 
                         let _ = self.activity_tx.send(ActivityEvent {
@@ -164,7 +178,7 @@ impl ServerState {
                         });
 
                         // Build response data: activity with name/application_id/type overrides.
-                        let mut resp_data = activity.clone();
+                        let mut resp_data = activity;
                         if let Some(obj) = resp_data.as_object_mut() {
                             obj.insert("name".to_string(), json!(""));
                             obj.insert("application_id".to_string(), json!(client_id));
