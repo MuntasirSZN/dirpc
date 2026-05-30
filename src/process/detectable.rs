@@ -636,28 +636,38 @@ pub fn path_variants(path: &str) -> SmallVec<[CompactString; 8]> {
 ///
 /// Returns a subslice of the input with zero allocation.
 /// Checks only at the end of the string so names like "base64encoder" are
-/// left intact. Ordered from most-specific to least-specific to avoid
-/// partial overwrites.
+/// left intact.
+///
+/// Uses direct byte comparisons instead of `str::strip_suffix` to avoid
+/// going through the stdlib pattern-matching machinery (`strip_suffix_of`
+/// → `ends_with` → `eq<u8>`), which produces variable codegen across
+/// different rustc versions.
 #[inline]
 pub fn strip_64_suffix(name: &str) -> &str {
+    let b = name.as_bytes();
+    let len = b.len();
+
     // Fast path: every target suffix ends with "64", so bail early when
     // the name cannot possibly match any of them.
-    let b = name.as_bytes();
-    if b.len() >= 2 && b[b.len() - 2] == b'6' && b[b.len() - 1] == b'4' {
-        // Check from most-specific to least-specific to avoid partial overwrites.
-        if let Some(s) = name.strip_suffix(".x64") {
-            return s;
-        }
-        if let Some(s) = name.strip_suffix("_64") {
-            return s;
-        }
-        if let Some(s) = name.strip_suffix("x64") {
-            return s;
-        }
-        // Bare "64" is the catch-all (always matches given the guard above).
-        return &name[..name.len() - 2];
+    if len < 2 || b[len - 2] != b'6' || b[len - 1] != b'4' {
+        return name;
     }
-    name
+
+    // Determine how many bytes to strip from the character preceding "64".
+    if len >= 3 {
+        match b[len - 3] {
+            // ".x64" (4 chars) — requires '.' at len-4
+            b'x' if len >= 4 && b[len - 4] == b'.' => return &name[..len - 4],
+            // "x64" (3 chars)
+            b'x' => return &name[..len - 3],
+            // "_64" (3 chars)
+            b'_' => return &name[..len - 3],
+            _ => {}
+        }
+    }
+
+    // Bare "64" catch-all.
+    &name[..len - 2]
 }
 
 /// Extract the last path component from a Unix or Windows path.
