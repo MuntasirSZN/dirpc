@@ -641,29 +641,28 @@ pub fn path_variants(path: &str) -> SmallVec<[CompactString; 8]> {
 /// Uses direct byte comparisons instead of `str::strip_suffix` to avoid
 /// going through the stdlib pattern-matching machinery (`strip_suffix_of`
 /// → `ends_with` → `eq<u8>`), which produces variable codegen across
-/// different rustc versions.
+/// different rustc versions. The `.x64` case uses a 4-byte slice
+/// comparison so LLVM can lower it to a single u32 load + compare.
 #[inline]
 pub fn strip_64_suffix(name: &str) -> &str {
     let b = name.as_bytes();
     let len = b.len();
 
-    // Fast path: every target suffix ends with "64", so bail early when
-    // the name cannot possibly match any of them.
+    // Most-specific suffix first: ".x64" (4 chars).
+    // Slice equality lets LLVM emit a single 4-byte comparison,
+    // avoiding the multiple individual byte loads of a match+guard.
+    if len >= 4 && b[len - 4..] == *b".x64" {
+        return &name[..len - 4];
+    }
+
+    // All remaining suffixes end with "64", so bail early otherwise.
     if len < 2 || b[len - 2] != b'6' || b[len - 1] != b'4' {
         return name;
     }
 
-    // Determine how many bytes to strip from the character preceding "64".
-    if len >= 3 {
-        match b[len - 3] {
-            // ".x64" (4 chars) — requires '.' at len-4
-            b'x' if len >= 4 && b[len - 4] == b'.' => return &name[..len - 4],
-            // "x64" (3 chars)
-            b'x' => return &name[..len - 3],
-            // "_64" (3 chars)
-            b'_' => return &name[..len - 3],
-            _ => {}
-        }
+    // "x64" or "_64" (3 chars)
+    if len >= 3 && (b[len - 3] == b'x' || b[len - 3] == b'_') {
+        return &name[..len - 3];
     }
 
     // Bare "64" catch-all.
