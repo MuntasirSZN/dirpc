@@ -1,6 +1,5 @@
 use crate::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use std::{collections::BTreeSet, fmt::Write as _};
 
@@ -324,11 +323,6 @@ pub struct DetectableDb {
     /// Populated from `exe_to_ids` during `ingest_entries` and reconstructed
     /// from the `EXES_TABLE` rows during `open`.
     exe_index: HashMap<CompactString, SmallVec<[CompactString; 4]>>,
-    /// Cache of aligned archived app payloads keyed by app_id.
-    ///
-    /// Avoids repeated `AlignedVec` allocations and copies for hot candidates.
-    /// Protected by `RwLock` so concurrent scans can read while updates remain safe.
-    aligned_cache: RwLock<AHashMap<CompactString, Arc<rkyv::util::AlignedVec<RKYV_ALIGNMENT>>>>,
 }
 
 impl DetectableDb {
@@ -340,7 +334,6 @@ impl DetectableDb {
             db,
             fst: empty_fst(),
             exe_index: HashMap::default(),
-            aligned_cache: RwLock::new(AHashMap::default()),
         };
         this.load_fst_from_db()?;
         Ok(this)
@@ -360,7 +353,6 @@ impl DetectableDb {
             db,
             fst: empty_fst(),
             exe_index: HashMap::default(),
-            aligned_cache: RwLock::new(AHashMap::default()),
         };
         this.ingest_entries(entries)?;
         Ok(this)
@@ -487,106 +479,66 @@ impl DetectableDb {
         path: &str,
         args: &[&str],
     ) -> Option<(CompactString, CompactString)> {
-        self.match_process_inner(path, args)
-    }
-
-    pub fn match_process_compact(
-        &self,
-        path: &str,
-        args: &[CompactString],
-    ) -> Option<(CompactString, CompactString)> {
-        self.match_process_inner(path, args)
-    }
-
-    fn match_process_inner<T: AsRef<str>>(
-        &self,
-        path: &str,
-        args: &[T],
-    ) -> Option<(CompactString, CompactString)> {
         let variants = path_variants(path);
         let filename = path_filename(path);
+        let exact = if filename.is_empty() {
+            CompactString::default()
+        } else {
+            let mut exact = CompactString::with_capacity(filename.len() + 1);
+            exact.push('>');
+            exact.push_str(filename);
+            exact
+        };
 
-        // ── FST pre-filter (in-memory, O(|name|) per candidate) ──────────────
-        let mut filename_key = CompactString::default();
-        let mut hit_names: SmallVec<[&str; 8]> = variants
+        if !variants
             .iter()
-            .filter(|c| self.fst.contains(c.as_bytes()))
             .map(CompactString::as_str)
-            .collect();
-        if !filename.is_empty() {
-            filename_key.push('>');
-            filename_key.push_str(filename);
-            if self.fst.contains(filename_key.as_bytes()) {
-                hit_names.push(filename_key.as_str());
-            }
-        }
-
-        if hit_names.is_empty() {
+            .chain((!exact.is_empty()).then_some(exact.as_str()))
+            .any(|exe_name| self.fst.contains(exe_name.as_bytes()))
+        {
             return None;
         }
 
-        // ── exe_index lookup (in-memory papaya::HashMap, no disk I/O) ────────
+        let read_txn: ReadTransaction = self.db.begin_read().ok()?;
+        let apps: redb::ReadOnlyTable<&str, &[u8]> = read_txn.open_table(APPS_TABLE).ok()?;
         let mut seen: AHashSet<CompactString> = AHashSet::default();
-        let mut app_ids: SmallVec<[CompactString; 8]> = SmallVec::new();
+        let pin = self.exe_index.pin();
+
+        for exe_name in variants
+            .iter()
+            .map(CompactString::as_str)
+            .chain((!exact.is_empty()).then_some(exact.as_str()))
         {
-            let pin = self.exe_index.pin();
-            for exe_name in &hit_names {
-                if let Some(ids) = pin.get(*exe_name) {
-                    for id in ids {
-                        if seen.insert(id.clone()) {
-                            app_ids.push(id.clone());
+            if !self.fst.contains(exe_name.as_bytes()) {
+                continue;
+            }
+
+            if let Some(ids) = pin.get(exe_name) {
+                for app_id in ids {
+                    if !seen.insert(app_id.clone()) {
+                        continue;
+                    }
+
+                    if let Ok(Some(guard)) = apps.get(app_id.as_str()) {
+                        let bytes: &[u8] = guard.value();
+
+                        // Copy into a 16-byte-aligned buffer so rkyv can access the
+                        // archive safely (redb mmap pages may not satisfy the archived
+                        // root's alignment requirement).
+                        let mut aligned = rkyv::util::AlignedVec::<RKYV_ALIGNMENT>::new();
+                        aligned.extend_from_slice(bytes);
+
+                        if let Ok(archived) =
+                            rkyv::access::<ArchivedDetectableEntry, rkyv::rancor::Error>(&aligned)
+                            && archived_match(archived, &variants, filename, args)
+                        {
+                            return Some((
+                                CompactString::from(archived.id.as_str()),
+                                CompactString::from(archived.name.as_str()),
+                            ));
                         }
                     }
                 }
-            }
-        }
-
-        if app_ids.is_empty() {
-            return None;
-        }
-
-        // ── redb APPS_TABLE lookup (mmap-backed, only on confirmed hits) ──────
-        let read_txn: ReadTransaction = self.db.begin_read().ok()?;
-        let apps: redb::ReadOnlyTable<&str, &[u8]> = read_txn.open_table(APPS_TABLE).ok()?;
-
-        // Verify each candidate with the full match logic.
-        for app_id in &app_ids {
-            let aligned = if let Ok(cache) = self.aligned_cache.read() {
-                cache.get(app_id).cloned()
-            } else {
-                warn!(
-                    "aligned_cache read lock poisoned; treating as cache miss and falling back to redb read."
-                );
-                None
-            };
-
-            let aligned = if let Some(aligned) = aligned {
-                aligned
-            } else if let Ok(Some(guard)) = apps.get(app_id.as_str()) {
-                let bytes: &[u8] = guard.value();
-                let mut aligned = rkyv::util::AlignedVec::<RKYV_ALIGNMENT>::new();
-                aligned.extend_from_slice(bytes);
-                let aligned = Arc::new(aligned);
-                if let Ok(mut cache) = self.aligned_cache.write() {
-                    cache.insert(app_id.clone(), aligned.clone());
-                } else {
-                    warn!(
-                        "aligned_cache write lock poisoned; skipping cache write and leaving future lookups uncached."
-                    );
-                }
-                aligned
-            } else {
-                continue;
-            };
-
-            if let Ok(archived) =
-                rkyv::access::<ArchivedDetectableEntry, rkyv::rancor::Error>(&aligned)
-                && archived_match(archived, &variants, filename, args)
-            {
-                return Some((
-                    CompactString::from(archived.id.as_str()),
-                    CompactString::from(archived.name.as_str()),
-                ));
             }
         }
 
@@ -607,11 +559,11 @@ fn empty_fst() -> Set<Vec<u8>> {
 
 // ─── Helper: zero-copy match against an archived entry ───────────────────────
 
-fn archived_match<T: AsRef<str>>(
+fn archived_match(
     archived: &ArchivedDetectableEntry,
     variants: &[CompactString],
     filename: &str,
-    args: &[T],
+    args: &[&str],
 ) -> bool {
     for exe in archived.executables.iter() {
         let exe_name: &str = &exe.name;
@@ -631,7 +583,7 @@ fn archived_match<T: AsRef<str>>(
             rkyv::option::ArchivedOption::None => true,
             rkyv::option::ArchivedOption::Some(required) => required
                 .iter()
-                .all(|ra| args.iter().any(|a| a.as_ref() == ra.as_str())),
+                .all(|ra| args.iter().any(|a| *a == ra.as_str())),
         };
 
         if args_ok {
@@ -686,28 +638,37 @@ pub fn path_variants(path: &str) -> SmallVec<[CompactString; 8]> {
 ///
 /// Returns a subslice of the input with zero allocation.
 /// Checks only at the end of the string so names like "base64encoder" are
-/// left intact. Ordered from most-specific to least-specific to avoid
-/// partial overwrites.
+/// left intact.
+///
+/// Uses direct byte comparisons instead of `str::strip_suffix` to avoid
+/// going through the stdlib pattern-matching machinery (`strip_suffix_of`
+/// → `ends_with` → `eq<u8>`), which produces variable codegen across
+/// different rustc versions. The `.x64` case uses a 4-byte slice
+/// comparison so LLVM can lower it to a single u32 load + compare.
 #[inline]
 pub fn strip_64_suffix(name: &str) -> &str {
-    // Fast path: every target suffix ends with "64", so bail early when
-    // the name cannot possibly match any of them.
     let b = name.as_bytes();
-    if b.len() >= 2 && b[b.len() - 2] == b'6' && b[b.len() - 1] == b'4' {
-        // Check from most-specific to least-specific to avoid partial overwrites.
-        if let Some(s) = name.strip_suffix(".x64") {
-            return s;
-        }
-        if let Some(s) = name.strip_suffix("_64") {
-            return s;
-        }
-        if let Some(s) = name.strip_suffix("x64") {
-            return s;
-        }
-        // Bare "64" is the catch-all (always matches given the guard above).
-        return &name[..name.len() - 2];
+    let len = b.len();
+
+    // Most-specific suffix first: ".x64" (4 chars).
+    // Slice equality lets LLVM emit a single 4-byte comparison,
+    // avoiding the multiple individual byte loads of a match+guard.
+    if len >= 4 && b[len - 4..] == *b".x64" {
+        return &name[..len - 4];
     }
-    name
+
+    // All remaining suffixes end with "64", so bail early otherwise.
+    if len < 2 || b[len - 2] != b'6' || b[len - 1] != b'4' {
+        return name;
+    }
+
+    // "x64" or "_64" (3 chars)
+    if len >= 3 && (b[len - 3] == b'x' || b[len - 3] == b'_') {
+        return &name[..len - 3];
+    }
+
+    // Bare "64" catch-all.
+    &name[..len - 2]
 }
 
 /// Extract the last path component from a Unix or Windows path.

@@ -155,7 +155,8 @@ pub async fn scan_once(
     let mut lost: SmallVec<[(u32, CompactString); 16]> = SmallVec::new();
 
     for proc in processes {
-        if let Some((id, name)) = db.match_process_compact(&proc.path, &proc.args) {
+        let args_refs: SmallVec<[&str; 8]> = proc.args.iter().map(CompactString::as_str).collect();
+        if let Some((id, name)) = db.match_process(&proc.path, &args_refs) {
             present.insert(proc.pid);
 
             // Newly detected game.
