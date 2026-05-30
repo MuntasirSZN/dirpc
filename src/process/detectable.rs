@@ -1,9 +1,10 @@
-use crate::{HashMap, HashSet};
+use crate::HashMap;
 use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use std::{collections::BTreeSet, fmt::Write as _};
 
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 use compact_str::CompactString;
 use fst::Set;
 use redb::{Database, ReadTransaction, ReadableDatabase, ReadableTable, TableDefinition};
@@ -323,6 +324,7 @@ pub struct DetectableDb {
     /// Populated from `exe_to_ids` during `ingest_entries` and reconstructed
     /// from the `EXES_TABLE` rows during `open`.
     exe_index: HashMap<CompactString, SmallVec<[CompactString; 4]>>,
+    aligned_cache: RwLock<AHashMap<CompactString, Arc<rkyv::util::AlignedVec<RKYV_ALIGNMENT>>>>,
 }
 
 impl DetectableDb {
@@ -334,6 +336,7 @@ impl DetectableDb {
             db,
             fst: empty_fst(),
             exe_index: HashMap::default(),
+            aligned_cache: RwLock::new(AHashMap::default()),
         };
         this.load_fst_from_db()?;
         Ok(this)
@@ -353,6 +356,7 @@ impl DetectableDb {
             db,
             fst: empty_fst(),
             exe_index: HashMap::default(),
+            aligned_cache: RwLock::new(AHashMap::default()),
         };
         this.ingest_entries(entries)?;
         Ok(this)
@@ -479,37 +483,53 @@ impl DetectableDb {
         path: &str,
         args: &[&str],
     ) -> Option<(CompactString, CompactString)> {
+        self.match_process_inner(path, args)
+    }
+
+    pub fn match_process_compact(
+        &self,
+        path: &str,
+        args: &[CompactString],
+    ) -> Option<(CompactString, CompactString)> {
+        self.match_process_inner(path, args)
+    }
+
+    fn match_process_inner<T: AsRef<str>>(
+        &self,
+        path: &str,
+        args: &[T],
+    ) -> Option<(CompactString, CompactString)> {
         let variants = path_variants(path);
         let filename = path_filename(path);
 
-        // Build the set of FST look-up candidates:
-        //   • regular path variants  (e.g. "csgo", "game/csgo")
-        //   • exact-filename variant  (e.g. ">csgo")
-        let mut candidates: SmallVec<[CompactString; 8]> = variants.clone();
-        if !filename.is_empty() {
-            candidates.push(CompactString::from(format!(">{filename}")));
-        }
-
         // ── FST pre-filter (in-memory, O(|name|) per candidate) ──────────────
-        let hit_names: SmallVec<[&str; 8]> = candidates
+        let mut filename_key = CompactString::new("");
+        let mut hit_names: SmallVec<[&str; 8]> = variants
             .iter()
             .filter(|c| self.fst.contains(c.as_bytes()))
             .map(CompactString::as_str)
             .collect();
+        if !filename.is_empty() {
+            filename_key.push('>');
+            filename_key.push_str(filename);
+            if self.fst.contains(filename_key.as_bytes()) {
+                hit_names.push(filename_key.as_str());
+            }
+        }
 
         if hit_names.is_empty() {
             return None;
         }
 
         // ── exe_index lookup (in-memory papaya::HashMap, no disk I/O) ────────
-        let seen: HashSet<CompactString> = HashSet::default();
+        let mut seen: AHashSet<CompactString> = AHashSet::default();
         let mut app_ids: SmallVec<[CompactString; 8]> = SmallVec::new();
         {
             let pin = self.exe_index.pin();
             for exe_name in &hit_names {
                 if let Some(ids) = pin.get(*exe_name) {
                     for id in ids {
-                        if seen.pin().insert(id.clone()) {
+                        if seen.insert(id.clone()) {
                             app_ids.push(id.clone());
                         }
                     }
@@ -527,24 +547,35 @@ impl DetectableDb {
 
         // Verify each candidate with the full match logic.
         for app_id in &app_ids {
-            if let Ok(Some(guard)) = apps.get(app_id.as_str()) {
-                let bytes: &[u8] = guard.value();
+            let aligned = if let Ok(cache) = self.aligned_cache.read() {
+                cache.get(app_id).cloned()
+            } else {
+                None
+            };
 
-                // Copy into a 16-byte-aligned buffer so rkyv can access the
-                // archive safely (redb mmap pages may not satisfy the archived
-                // root's alignment requirement).
+            let aligned = if let Some(aligned) = aligned {
+                aligned
+            } else if let Ok(Some(guard)) = apps.get(app_id.as_str()) {
+                let bytes: &[u8] = guard.value();
                 let mut aligned = rkyv::util::AlignedVec::<RKYV_ALIGNMENT>::new();
                 aligned.extend_from_slice(bytes);
-
-                if let Ok(archived) =
-                    rkyv::access::<ArchivedDetectableEntry, rkyv::rancor::Error>(&aligned)
-                    && archived_match(archived, path, args)
-                {
-                    return Some((
-                        CompactString::from(archived.id.as_str()),
-                        CompactString::from(archived.name.as_str()),
-                    ));
+                let aligned = Arc::new(aligned);
+                if let Ok(mut cache) = self.aligned_cache.write() {
+                    cache.insert(app_id.clone(), aligned.clone());
                 }
+                aligned
+            } else {
+                continue;
+            };
+
+            if let Ok(archived) =
+                rkyv::access::<ArchivedDetectableEntry, rkyv::rancor::Error>(&aligned)
+                && archived_match(archived, &variants, filename, args)
+            {
+                return Some((
+                    CompactString::from(archived.id.as_str()),
+                    CompactString::from(archived.name.as_str()),
+                ));
             }
         }
 
@@ -565,10 +596,12 @@ fn empty_fst() -> Set<Vec<u8>> {
 
 // ─── Helper: zero-copy match against an archived entry ───────────────────────
 
-fn archived_match(archived: &ArchivedDetectableEntry, path: &str, args: &[&str]) -> bool {
-    let variants = path_variants(path);
-    let filename = path_filename(path);
-
+fn archived_match<T: AsRef<str>>(
+    archived: &ArchivedDetectableEntry,
+    variants: &[CompactString],
+    filename: &str,
+    args: &[T],
+) -> bool {
     for exe in archived.executables.iter() {
         let exe_name: &str = &exe.name;
 
@@ -587,7 +620,7 @@ fn archived_match(archived: &ArchivedDetectableEntry, path: &str, args: &[&str])
             rkyv::option::ArchivedOption::None => true,
             rkyv::option::ArchivedOption::Some(required) => required
                 .iter()
-                .all(|ra| args.iter().any(|a| *a == ra.as_str())),
+                .all(|ra| args.iter().any(|a| a.as_ref() == ra.as_str())),
         };
 
         if args_ok {

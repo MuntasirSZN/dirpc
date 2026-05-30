@@ -12,6 +12,7 @@ use crate::types::{ActivityEvent, RpcMessage};
 
 /// Mock user/config data sent to every new client upon connection.
 pub const READY_PAYLOAD: &str = r#"{"cmd":"DISPATCH","data":{"v":1,"config":{"cdn_host":"cdn.discordapp.com","api_endpoint":"//discord.com/api","environment":"production"},"user":{"id":"1045800378228281345","username":"arrpc","discriminator":"0","global_name":"arRPC","avatar":"cfefa4d9839fb4bdf030f91c2a13e95c","avatar_decoration_data":null,"bot":false,"flags":0,"premium_type":0}},"evt":"READY","nonce":null}"#;
+pub const SOCKET_QUEUE_CAPACITY: usize = 128;
 
 /// Shared server state threaded through all transport handlers.
 pub struct ServerState {
@@ -21,7 +22,7 @@ pub struct ServerState {
     ///
     /// Uses `papaya` (epoch-based, optimised for reads) because every inbound
     /// message triggers a read while socket register/unregister are rare.
-    sockets: HashMap<u64, mpsc::UnboundedSender<String>>,
+    sockets: HashMap<u64, mpsc::Sender<String>>,
 }
 
 impl ServerState {
@@ -49,7 +50,7 @@ impl ServerState {
     }
 
     /// Register a per-socket response sender.
-    pub async fn register_socket(&self, socket_id: u64, tx: mpsc::UnboundedSender<String>) {
+    pub async fn register_socket(&self, socket_id: u64, tx: mpsc::Sender<String>) {
         self.sockets.pin().insert(socket_id, tx);
     }
 
@@ -65,8 +66,11 @@ impl ServerState {
 
     /// Forward a text frame to a specific socket.
     pub async fn send_to_socket(&self, socket_id: u64, msg: String) {
-        if let Some(tx) = self.sockets.pin().get(&socket_id) {
-            let _ = tx.send(msg);
+        if let Some(tx) = self.sockets.pin().get(&socket_id)
+            && let Err(err) = tx.try_send(msg)
+            && matches!(err, tokio::sync::mpsc::error::TrySendError::Full(_))
+        {
+            debug!("Dropping outbound message for slow socket_id={}", socket_id);
         }
     }
 
@@ -101,42 +105,42 @@ impl ServerState {
                         .ok()
                     }
                     Some(raw_activity) => {
-                        let mut activity = raw_activity.clone();
                         let mut metadata = serde_json::Map::new();
-                        let mut extra = serde_json::Map::new();
+                        let mut button_labels: Option<Vec<Value>> = None;
+                        let mut canonical = raw_activity.as_object().cloned().unwrap_or_default();
 
                         // Map buttons: extract labels for the frame, urls for metadata.
-                        if let Some(buttons) = activity
-                            .as_object()
-                            .and_then(|o| o.get("buttons"))
-                            .and_then(|b| b.as_array())
-                            .cloned()
-                        {
-                            let labels: Vec<Value> = buttons
-                                .iter()
-                                .filter_map(|b| b.get("label").cloned())
-                                .collect();
-                            let urls: Vec<Value> = buttons
-                                .iter()
-                                .filter_map(|b| b.get("url").cloned())
-                                .collect();
+                        if let Some(buttons) = canonical.get("buttons").and_then(|b| b.as_array()) {
+                            let mut labels: Vec<Value> = Vec::with_capacity(buttons.len());
+                            let mut urls: Vec<Value> = Vec::with_capacity(buttons.len());
+                            for button in buttons {
+                                if let Some(label) = button.get("label") {
+                                    labels.push(label.clone());
+                                }
+                                if let Some(url) = button.get("url") {
+                                    urls.push(url.clone());
+                                }
+                            }
                             if !labels.is_empty() {
-                                extra.insert("buttons".to_string(), json!(labels));
-                                metadata.insert("button_urls".to_string(), json!(urls));
+                                button_labels = Some(labels);
+                                metadata.insert("button_urls".to_string(), Value::Array(urls));
                             }
                         }
 
                         // Translate timestamps from seconds to milliseconds when needed.
-                        if let Some(ts_obj) = activity.get_mut("timestamps") {
+                        if let Some(ts_obj) = canonical
+                            .get_mut("timestamps")
+                            .and_then(Value::as_object_mut)
+                        {
                             if let Some(start) = ts_obj.get("start").and_then(|v| v.as_i64()) {
-                                ts_obj["start"] = json!(maybe_to_ms(start));
+                                ts_obj.insert("start".to_string(), json!(maybe_to_ms(start)));
                             }
                             if let Some(end) = ts_obj.get("end").and_then(|v| v.as_i64()) {
-                                ts_obj["end"] = json!(maybe_to_ms(end));
+                                ts_obj.insert("end".to_string(), json!(maybe_to_ms(end)));
                             }
                         }
 
-                        let instance = activity
+                        let instance = canonical
                             .get("instance")
                             .and_then(|v| v.as_bool())
                             .unwrap_or(false);
@@ -148,13 +152,11 @@ impl ServerState {
                         full.insert("type".to_string(), json!(0u32));
                         full.insert("metadata".to_string(), Value::Object(metadata));
                         full.insert("flags".to_string(), json!(flags));
-                        if let Some(obj) = activity.as_object() {
-                            for (k, v) in obj {
-                                full.insert(k.clone(), v.clone());
-                            }
-                        }
-                        for (k, v) in &extra {
+                        for (k, v) in &canonical {
                             full.insert(k.clone(), v.clone());
+                        }
+                        if let Some(labels) = &button_labels {
+                            full.insert("buttons".to_string(), Value::Array(labels.clone()));
                         }
 
                         let _ = self.activity_tx.send(ActivityEvent {
@@ -164,16 +166,14 @@ impl ServerState {
                         });
 
                         // Build response data: activity with name/application_id/type overrides.
-                        let mut resp_data = activity.clone();
-                        if let Some(obj) = resp_data.as_object_mut() {
-                            obj.insert("name".to_string(), json!(""));
-                            obj.insert("application_id".to_string(), json!(client_id));
-                            obj.insert("type".to_string(), json!(0u32));
-                        }
+                        let mut resp_data = canonical;
+                        resp_data.insert("name".to_string(), json!(""));
+                        resp_data.insert("application_id".to_string(), json!(client_id));
+                        resp_data.insert("type".to_string(), json!(0u32));
 
                         serde_json::to_string(&json!({
                             "cmd": msg.cmd,
-                            "data": resp_data,
+                            "data": Value::Object(resp_data),
                             "evt": null,
                             "nonce": msg.nonce,
                         }))

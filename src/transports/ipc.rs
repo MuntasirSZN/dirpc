@@ -4,8 +4,10 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{debug, error, info, warn};
 
-use crate::server::{READY_PAYLOAD, ServerState};
+use crate::server::{READY_PAYLOAD, SOCKET_QUEUE_CAPACITY, ServerState};
 use crate::types::{Handshake, IpcOpcode};
+
+const IPC_PROBE_TIMEOUT_MS: u64 = 60;
 
 /// Encode an IPC frame: 4-byte LE opcode + 4-byte LE length + payload bytes.
 pub fn encode(opcode: i32, data: &str) -> Vec<u8> {
@@ -127,7 +129,7 @@ where
     }
 
     // ── Step 3: register + main loop ───────────────────────────────────────
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(SOCKET_QUEUE_CAPACITY);
     state.register_socket(socket_id, tx).await;
 
     loop {
@@ -224,7 +226,7 @@ pub async fn find_available_socket() -> Option<(tokio::net::UnixListener, PathBu
 
         // Probe: if we can connect, someone is already there.
         match tokio::time::timeout(
-            std::time::Duration::from_millis(200),
+            std::time::Duration::from_millis(IPC_PROBE_TIMEOUT_MS),
             UnixStream::connect(&path),
         )
         .await

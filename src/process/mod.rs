@@ -1,6 +1,6 @@
 pub mod detectable;
 
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 use compact_str::CompactString;
 use smallvec::SmallVec;
 use std::sync::Arc;
@@ -23,13 +23,20 @@ pub struct ProcessInfo {
 
 /// Read the current process list using [`sysinfo`] (cross-platform).
 pub async fn get_process_list() -> Vec<ProcessInfo> {
-    tokio::task::spawn_blocking(|| {
-        use sysinfo::{ProcessesToUpdate, System};
+    use sysinfo::System;
+    let (_sys, processes) = get_process_list_with_system(System::new()).await;
+    processes
+}
 
-        let mut sys = System::new();
+async fn get_process_list_with_system(
+    mut sys: sysinfo::System,
+) -> (sysinfo::System, Vec<ProcessInfo>) {
+    tokio::task::spawn_blocking(|| {
+        use sysinfo::ProcessesToUpdate;
         sys.refresh_processes(ProcessesToUpdate::All, false);
 
-        sys.processes()
+        let processes = sys
+            .processes()
             .values()
             .filter_map(|proc| {
                 let path = proc.exe()?.to_string_lossy().into_owned();
@@ -48,10 +55,11 @@ pub async fn get_process_list() -> Vec<ProcessInfo> {
                     args,
                 })
             })
-            .collect()
+            .collect();
+        (sys, processes)
     })
     .await
-    .unwrap_or_default()
+    .unwrap_or_else(|_| (sysinfo::System::new(), Vec::new()))
 }
 
 /// Run the process scanner loop: every 5 seconds scan running processes and
@@ -67,6 +75,8 @@ pub async fn get_process_list() -> Vec<ProcessInfo> {
 /// Once per week the list is re-fetched.  A 304 Not-Modified response leaves
 /// the existing database untouched.
 pub async fn start_process_scanner(state: Arc<ServerState>) {
+    use sysinfo::System;
+
     let db_path = cache_db_path();
 
     // ── Initial load ─────────────────────────────────────────────────────────
@@ -101,6 +111,7 @@ pub async fn start_process_scanner(state: Arc<ServerState>) {
     // pid → app_id for currently-active games.
     let mut active: AHashMap<u32, CompactString> = AHashMap::default();
     let mut last_refresh = std::time::Instant::now();
+    let mut sys = System::new();
 
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
@@ -127,7 +138,9 @@ pub async fn start_process_scanner(state: Arc<ServerState>) {
             last_refresh = std::time::Instant::now();
         }
 
-        scan_once(&state, &db, &mut active).await;
+        let (next_sys, processes) = get_process_list_with_system(sys).await;
+        sys = next_sys;
+        scan_once(&state, &db, &mut active, &processes).await;
     }
 }
 
@@ -136,18 +149,20 @@ pub async fn scan_once(
     state: &Arc<ServerState>,
     db: &DetectableDb,
     active: &mut AHashMap<u32, CompactString>,
+    processes: &[ProcessInfo],
 ) {
-    let processes = get_process_list().await;
+    let mut present: AHashSet<u32> = AHashSet::with_capacity(processes.len());
+    let mut lost: SmallVec<[(u32, CompactString); 16]> = SmallVec::new();
 
-    let mut still_present: AHashMap<u32, CompactString> = AHashMap::default();
-
-    for proc in &processes {
-        let arg_refs: SmallVec<[&str; 8]> = proc.args.iter().map(CompactString::as_str).collect();
-        if let Some((id, name)) = db.match_process(&proc.path, &arg_refs) {
-            still_present.insert(proc.pid, id.clone());
+    for proc in processes {
+        if let Some((id, name)) = db.match_process_compact(&proc.path, &proc.args) {
+            present.insert(proc.pid);
 
             // Newly detected game.
-            if !active.contains_key(&proc.pid) {
+            let was_same = active
+                .get(&proc.pid)
+                .is_some_and(|prev| prev.as_str() == id.as_str());
+            if !was_same {
                 debug!("Detected game '{}' (id={}) pid={}", name, id, proc.pid);
                 let activity = json!({
                     "application_id": id,
@@ -164,28 +179,29 @@ pub async fn scan_once(
                 };
                 state.handle_message(0, &id, &msg).await;
             }
+
+            active.insert(proc.pid, id);
         }
     }
 
-    // Games that disappeared since last scan.
-    let lost: Vec<u32> = active
-        .keys()
-        .filter(|pid| !still_present.contains_key(*pid))
-        .copied()
-        .collect();
+    active.retain(|pid, game_id| {
+        if present.contains(pid) {
+            true
+        } else {
+            lost.push((*pid, game_id.clone()));
+            false
+        }
+    });
 
-    for pid in lost {
+    for (pid, game_id) in lost {
         debug!("Lost game pid={}", pid);
         let msg = crate::types::RpcMessage {
             cmd: "SET_ACTIVITY".into(),
             args: Some(json!({ "pid": pid, "activity": null })),
             ..Default::default()
         };
-        let game_id = active.get(&pid).cloned().unwrap_or_default();
         state.handle_message(0, &game_id, &msg).await;
     }
-
-    *active = still_present;
 }
 
 /// Current Unix time in milliseconds, using [`jiff`] (panic-free).
