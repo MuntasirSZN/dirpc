@@ -70,13 +70,18 @@ impl ServerState {
             && let Err(err) = tx.try_send(msg)
         {
             match err {
-                tokio::sync::mpsc::error::TrySendError::Full(_) => {
-                    debug!("Dropping outbound message for slow socket_id={}", socket_id);
-                }
-                tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                tokio::sync::mpsc::error::TrySendError::Full(payload) => {
                     debug!(
-                        "Dropping outbound message for closed socket_id={}",
-                        socket_id
+                        "Dropping outbound message for slow socket_id={} ({} bytes in queued frame)",
+                        socket_id,
+                        payload.len()
+                    );
+                }
+                tokio::sync::mpsc::error::TrySendError::Closed(payload) => {
+                    debug!(
+                        "Dropping outbound message for closed socket_id={} ({} bytes frame)",
+                        socket_id,
+                        payload.len()
                     );
                 }
             }

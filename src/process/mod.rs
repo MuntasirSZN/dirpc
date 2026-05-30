@@ -159,10 +159,10 @@ pub async fn scan_once(
             present.insert(proc.pid);
 
             // Newly detected game.
-            let was_same = active
+            let already_tracked_with_same_id = active
                 .get(&proc.pid)
                 .is_some_and(|prev| prev.as_str() == id.as_str());
-            if !was_same {
+            if !already_tracked_with_same_id {
                 debug!("Detected game '{}' (id={}) pid={}", name, id, proc.pid);
                 let activity = json!({
                     "application_id": id,

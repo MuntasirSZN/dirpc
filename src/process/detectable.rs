@@ -324,6 +324,10 @@ pub struct DetectableDb {
     /// Populated from `exe_to_ids` during `ingest_entries` and reconstructed
     /// from the `EXES_TABLE` rows during `open`.
     exe_index: HashMap<CompactString, SmallVec<[CompactString; 4]>>,
+    /// Cache of aligned archived app payloads keyed by app_id.
+    ///
+    /// Avoids repeated `AlignedVec` allocations and copies for hot candidates.
+    /// Protected by `RwLock` so concurrent scans can read while updates remain safe.
     aligned_cache: RwLock<AHashMap<CompactString, Arc<rkyv::util::AlignedVec<RKYV_ALIGNMENT>>>>,
 }
 
@@ -503,7 +507,7 @@ impl DetectableDb {
         let filename = path_filename(path);
 
         // ── FST pre-filter (in-memory, O(|name|) per candidate) ──────────────
-        let mut filename_key = CompactString::new("");
+        let mut filename_key = CompactString::default();
         let mut hit_names: SmallVec<[&str; 8]> = variants
             .iter()
             .filter(|c| self.fst.contains(c.as_bytes()))
@@ -550,7 +554,9 @@ impl DetectableDb {
             let aligned = if let Ok(cache) = self.aligned_cache.read() {
                 cache.get(app_id).cloned()
             } else {
-                warn!("aligned_cache read lock poisoned; skipping cache read");
+                warn!(
+                    "aligned_cache read lock poisoned; treating as cache miss and falling back to redb read."
+                );
                 None
             };
 
@@ -564,7 +570,9 @@ impl DetectableDb {
                 if let Ok(mut cache) = self.aligned_cache.write() {
                     cache.insert(app_id.clone(), aligned.clone());
                 } else {
-                    warn!("aligned_cache write lock poisoned; skipping cache write");
+                    warn!(
+                        "aligned_cache write lock poisoned; skipping cache write and leaving future lookups uncached."
+                    );
                 }
                 aligned
             } else {
