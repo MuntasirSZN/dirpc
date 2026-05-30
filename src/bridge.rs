@@ -12,8 +12,6 @@ use tracing::{debug, info, warn};
 
 use crate::types::ActivityEvent;
 
-const MAX_BRIDGE_HANDSHAKE_BYTES: usize = 16 * 1024;
-
 /// socket_id -> serialized JSON
 type LastMsgs = Arc<HashMap<u64, Arc<str>>>;
 
@@ -101,9 +99,6 @@ async fn do_handshake(mut stream: TcpStream) -> anyhow::Result<TcpStream> {
         if n == 0 {
             return Err(anyhow::anyhow!("Connection closed during handshake"));
         }
-        if buf.len() > MAX_BRIDGE_HANDSHAKE_BYTES {
-            return Err(anyhow::anyhow!("Bridge handshake too large"));
-        }
 
         if let Some((req, _)) = parse_request(&buf)? {
             let accept_key = generate_accept_key(req.key);
@@ -125,12 +120,14 @@ async fn handle_client(stream: TcpStream, state: Arc<BridgeState>) -> anyhow::Re
     let mut rx = state.tx.subscribe();
 
     // Catch-up snapshot: send all last known activity payloads to the new client.
-    let snapshot_keys: Vec<u64> = state.last_msgs.pin().iter().map(|(k, _)| *k).collect();
-    for socket_id in snapshot_keys {
-        let payload = state.last_msgs.pin().get(&socket_id).cloned();
-        if let Some(payload) = payload {
-            writer.send(Message::text(&*payload)).await?;
-        }
+    let snapshot: Box<[Arc<str>]> = state
+        .last_msgs
+        .pin()
+        .iter()
+        .map(|(_, v)| v.clone())
+        .collect();
+    for payload in snapshot {
+        writer.send(Message::text(&*payload)).await?;
     }
 
     loop {

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use bytes::BytesMut;
+use compact_str::CompactString;
 use sockudo_ws::WebSocketStream;
 use sockudo_ws::handshake::{build_response, generate_accept_key, parse_request};
 use sockudo_ws::protocol::Message;
@@ -27,22 +28,22 @@ pub fn validate_origin(origin: &str) -> bool {
 /// Parse query parameters from the raw HTTP request line.
 ///
 /// Returns `(v, encoding, client_id)` extracted from the URI query string.
-fn parse_query(buf: &[u8]) -> (Option<u32>, Option<String>, String) {
+fn parse_query(buf: &[u8]) -> (Option<u32>, Option<&str>, &str) {
     let text = std::str::from_utf8(buf).unwrap_or("");
     let request_line = text.lines().next().unwrap_or("");
     let path = request_line.split_whitespace().nth(1).unwrap_or("/");
     let query = path.split_once('?').map(|(_, q)| q).unwrap_or("");
 
     let mut v: Option<u32> = None;
-    let mut encoding: Option<String> = None;
-    let mut client_id = String::new();
+    let mut encoding: Option<&str> = None;
+    let mut client_id = "";
 
     for part in query.split('&') {
         if let Some((key, value)) = part.split_once('=') {
             match key {
                 "v" => v = value.parse().ok(),
-                "encoding" => encoding = Some(value.to_string()),
-                "client_id" => client_id = value.to_string(),
+                "encoding" => encoding = Some(value),
+                "client_id" => client_id = value,
                 _ => {}
             }
         }
@@ -102,7 +103,7 @@ pub async fn start_ws_server(state: Arc<ServerState>) -> std::io::Result<()> {
 
 /// Read the HTTP upgrade request, validate query params / Origin, complete the
 /// WebSocket handshake, and return the upgraded stream plus the `client_id`.
-async fn do_handshake(mut stream: TcpStream) -> anyhow::Result<(TcpStream, String)> {
+async fn do_handshake(mut stream: TcpStream) -> anyhow::Result<(TcpStream, CompactString)> {
     let mut buf = BytesMut::with_capacity(4096);
 
     loop {
@@ -134,7 +135,7 @@ async fn do_handshake(mut stream: TcpStream) -> anyhow::Result<(TcpStream, Strin
             return Err(anyhow::anyhow!("WS: v must be 1"));
         }
 
-        if encoding.as_deref() != Some("json") {
+        if encoding != Some("json") {
             stream
                 .write_all(
                     http_error_response("400 Bad Request", "encoding must be json").as_bytes(),
@@ -158,7 +159,7 @@ async fn do_handshake(mut stream: TcpStream) -> anyhow::Result<(TcpStream, Strin
         stream.write_all(&response).await?;
         stream.flush().await?;
 
-        return Ok((stream, client_id));
+        return Ok((stream, CompactString::from(client_id)));
     }
 }
 
