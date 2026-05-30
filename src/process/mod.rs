@@ -32,7 +32,7 @@ pub async fn get_process_list() -> Vec<ProcessInfo> {
         sys.processes()
             .values()
             .filter_map(|proc| {
-                let path = proc.exe()?.to_string_lossy().into_owned();
+                let path = proc.exe()?.to_string_lossy();
                 if path.is_empty() {
                     return None;
                 }
@@ -44,7 +44,7 @@ pub async fn get_process_list() -> Vec<ProcessInfo> {
                     .collect();
                 Some(ProcessInfo {
                     pid: proc.pid().as_u32(),
-                    path: CompactString::from(path.as_str()),
+                    path: CompactString::from(path.as_ref()),
                     args,
                 })
             })
@@ -168,7 +168,7 @@ pub async fn scan_once(
     }
 
     // Games that disappeared since last scan.
-    let lost: Vec<u32> = active
+    let lost: Box<[u32]> = active
         .keys()
         .filter(|pid| !still_present.contains_key(*pid))
         .copied()

@@ -120,7 +120,7 @@ async fn handle_client(stream: TcpStream, state: Arc<BridgeState>) -> anyhow::Re
     let mut rx = state.tx.subscribe();
 
     // Catch-up snapshot: send all last known activity payloads to the new client.
-    let snapshot: Vec<Arc<str>> = state
+    let snapshot: Box<[Arc<str>]> = state
         .last_msgs
         .pin()
         .iter()
