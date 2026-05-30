@@ -315,7 +315,7 @@ async fn test_socket_registration_and_unregistration() {
     let (state, mut rx) = ServerState::new();
     let state = Arc::new(state);
 
-    let (tx, mut client_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let (tx, mut client_rx) = tokio::sync::mpsc::channel::<String>(4);
     state.register_socket(99, tx).await;
 
     state.send_to_socket(99, "hello".to_string()).await;

@@ -530,7 +530,7 @@ impl DetectableDb {
 
                         if let Ok(archived) =
                             rkyv::access::<ArchivedDetectableEntry, rkyv::rancor::Error>(&aligned)
-                            && archived_match(archived, path, args)
+                            && archived_match(archived, &variants, filename, args)
                         {
                             return Some((
                                 CompactString::from(archived.id.as_str()),
@@ -559,10 +559,12 @@ fn empty_fst() -> Set<Vec<u8>> {
 
 // ─── Helper: zero-copy match against an archived entry ───────────────────────
 
-fn archived_match(archived: &ArchivedDetectableEntry, path: &str, args: &[&str]) -> bool {
-    let variants = path_variants(path);
-    let filename = path_filename(path);
-
+fn archived_match(
+    archived: &ArchivedDetectableEntry,
+    variants: &[CompactString],
+    filename: &str,
+    args: &[&str],
+) -> bool {
     for exe in archived.executables.iter() {
         let exe_name: &str = &exe.name;
 

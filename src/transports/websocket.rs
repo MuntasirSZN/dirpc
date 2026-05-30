@@ -9,8 +9,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{debug, info, warn};
 
-use crate::server::{READY_PAYLOAD, ServerState};
+use crate::server::{READY_PAYLOAD, SOCKET_QUEUE_CAPACITY, ServerState};
 use crate::types::RpcMessage;
+
+const MAX_WS_HANDSHAKE_BYTES: usize = 16 * 1024;
 
 /// Return `true` when the `Origin` header is acceptable for WebSocket upgrades.
 ///
@@ -109,6 +111,15 @@ async fn do_handshake(mut stream: TcpStream) -> anyhow::Result<(TcpStream, Compa
         if n == 0 {
             return Err(anyhow::anyhow!("Connection closed during handshake"));
         }
+        if buf.len() > MAX_WS_HANDSHAKE_BYTES {
+            stream
+                .write_all(
+                    http_error_response("431 Request Header Fields Too Large", "request too large")
+                        .as_bytes(),
+                )
+                .await?;
+            return Err(anyhow::anyhow!("WS: handshake too large"));
+        }
 
         let Some((req, _)) = parse_request(&buf)? else {
             continue;
@@ -169,7 +180,7 @@ async fn handle_connection(stream: TcpStream, state: Arc<ServerState>) -> anyhow
         return Ok(());
     }
 
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(SOCKET_QUEUE_CAPACITY);
     state.register_socket(socket_id, tx).await;
 
     loop {
