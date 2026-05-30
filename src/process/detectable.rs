@@ -550,6 +550,7 @@ impl DetectableDb {
             let aligned = if let Ok(cache) = self.aligned_cache.read() {
                 cache.get(app_id).cloned()
             } else {
+                warn!("aligned_cache read lock poisoned; skipping cache read");
                 None
             };
 
@@ -562,6 +563,8 @@ impl DetectableDb {
                 let aligned = Arc::new(aligned);
                 if let Ok(mut cache) = self.aligned_cache.write() {
                     cache.insert(app_id.clone(), aligned.clone());
+                } else {
+                    warn!("aligned_cache write lock poisoned; skipping cache write");
                 }
                 aligned
             } else {

@@ -68,9 +68,18 @@ impl ServerState {
     pub async fn send_to_socket(&self, socket_id: u64, msg: String) {
         if let Some(tx) = self.sockets.pin().get(&socket_id)
             && let Err(err) = tx.try_send(msg)
-            && matches!(err, tokio::sync::mpsc::error::TrySendError::Full(_))
         {
-            debug!("Dropping outbound message for slow socket_id={}", socket_id);
+            match err {
+                tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                    debug!("Dropping outbound message for slow socket_id={}", socket_id);
+                }
+                tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                    debug!(
+                        "Dropping outbound message for closed socket_id={}",
+                        socket_id
+                    );
+                }
+            }
         }
     }
 
