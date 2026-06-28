@@ -586,13 +586,13 @@ dependencies = [
  "compact_str",
  "fst",
  "jiff",
+ "jzon-rs-compat",
  "mimalloc-safe",
  "papaya",
  "redb",
  "reqwest",
  "rkyv",
  "serde",
- "serde_json",
  "simdutf8",
  "smallvec",
  "sockudo-ws",
@@ -671,6 +671,12 @@ dependencies = [
  "libc",
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "fast-float2"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8eb564c5c7423d25c886fb561d1e4ee69f72354d16918afa32c08811f6b6a55"
 
 [[package]]
 name = "fastbloom"
@@ -1402,6 +1408,37 @@ dependencies = [
  "cfg-if",
  "futures-util",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "jzon-rs"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b8607f9aa775c9c06d43e3cf72bb53c3eb816caf0e9a57198af18b9e4976e27"
+dependencies = [
+ "fast-float2",
+ "ryu",
+]
+
+[[package]]
+name = "jzon-rs-compat"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10a96407dd02b2bdd64c2c3d2c9701fd0b52568a7c30c75040fecfc337f5e9aa"
+dependencies = [
+ "jzon-rs-serde",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "jzon-rs-serde"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94c9e582fa60c25c556ad5f93cb9a1606f115f9f3a88d71fbcb481ebda2389b6"
+dependencies = [
+ "jzon-rs",
+ "serde",
 ]
 
 [[package]]

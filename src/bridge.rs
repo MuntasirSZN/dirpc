@@ -11,6 +11,7 @@ use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
 use crate::types::ActivityEvent;
+use serde_json::json;
 
 /// socket_id -> serialized JSON
 type LastMsgs = Arc<HashMap<u64, Arc<str>>>;
@@ -49,21 +50,36 @@ pub async fn start_bridge(
             match activity_rx.recv().await {
                 Ok(event) => {
                     let key = event.socket_id;
+                    debug!(
+                        "Bridge recv ActivityEvent: socket_id={}, has_activity={}, pid={:?}",
+                        key,
+                        event.activity.is_some(),
+                        event.pid
+                    );
+
+                    // Build the full bridge message matching original arRPC format
+                    // so the Vencord arRPC plugin (and other bridge consumers) receive
+                    // the activity wrapped in an object with pid and socketId.
+                    let bridge_msg = json!({
+                        "activity": event.activity,
+                        "pid": event.pid,
+                        "socketId": event.socket_id.to_string(),
+                    });
+                    let json = match serde_json::to_string(&bridge_msg) {
+                        Ok(s) => Arc::<str>::from(s),
+                        Err(_) => continue,
+                    };
 
                     match &event.activity {
                         None => {
                             state_feed.last_msgs.pin().remove(&key);
                         }
-                        Some(v) => {
-                            let json = match serde_json::to_string(v) {
-                                Ok(s) => Arc::<str>::from(s),
-                                Err(_) => continue,
-                            };
-
+                        Some(_) => {
                             state_feed.last_msgs.pin().insert(key, json.clone());
-                            let _ = state_feed.tx.send(json);
                         }
                     }
+
+                    let _ = state_feed.tx.send(json);
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
                     warn!("Bridge lagged {} messages", n);
@@ -119,6 +135,11 @@ async fn handle_client(stream: TcpStream, state: Arc<BridgeState>) -> anyhow::Re
 
     let mut rx = state.tx.subscribe();
 
+    debug!(
+        "Bridge client connected, sending catch-up snapshot ({} items)",
+        state.last_msgs.len()
+    );
+
     // Catch-up snapshot: send all last known activity payloads to the new client.
     let snapshot: Box<[Arc<str>]> = state
         .last_msgs
@@ -126,8 +147,8 @@ async fn handle_client(stream: TcpStream, state: Arc<BridgeState>) -> anyhow::Re
         .iter()
         .map(|(_, v)| v.clone())
         .collect();
-    for payload in snapshot {
-        writer.send(Message::text(&*payload)).await?;
+    for payload in &snapshot {
+        writer.send(Message::text(payload.as_ref())).await?;
     }
 
     loop {
