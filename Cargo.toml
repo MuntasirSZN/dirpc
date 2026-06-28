@@ -91,7 +91,7 @@ rkyv = { version = "0.8", features = ["big_endian"] }
 
 [dev-dependencies]
 tokio-test = "0.4"
-divan = { version = "4", package = "codspeed-divan-compat" }
+divan = { version = "5", package = "codspeed-divan-compat" }
 
 [[bench]]
 name = "benchmarks"
