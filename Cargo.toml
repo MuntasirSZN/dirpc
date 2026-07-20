@@ -61,7 +61,7 @@ smallvec = { version = "1", features = [
   "union",
   "const_generics",
 ] }
-compact_str = { version = "0.9", features = ["serde", "rkyv", "smallvec"] }
+compact_str = { version = "0.10", features = ["serde", "rkyv", "smallvec"] }
 simdutf8 = "0.1"
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
