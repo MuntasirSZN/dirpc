@@ -785,3 +785,115 @@ async fn test_detectable_db_rebuild_is_idempotent() {
     assert!(db2.match_process("/home/user/.steam/csgo", &[]).is_some());
     let _ = std::fs::remove_file(&path);
 }
+
+#[tokio::test]
+#[cfg(not(miri))]
+async fn test_detectable_db_writes_fst_file_and_reuses_it() {
+    use dirpc::process::detectable::DetectableDb;
+
+    // Use parameterised paths so this test never touches the production
+    // cache directory.  Two parallel test runs each get a unique pair.
+    let db_path = temp_redb_path("fst_file");
+    let fst_path = sibling_with_extension(&db_path, "fst");
+
+    // Rebuild must produce both the redb and the FST file at the supplied
+    // path.
+    let db = DetectableDb::rebuild_with_fst(&db_path, &fst_path, &sample_entries())
+        .await
+        .unwrap();
+    assert_eq!(db.fst_len(), 3);
+    let meta =
+        std::fs::metadata(&fst_path).expect("FST file was not created at the supplied fst_path");
+    // FST header alone is ≥ 36 bytes; with 3 short keys it must be larger.
+    assert!(
+        meta.len() > 50,
+        "FST file is suspiciously small: {} bytes",
+        meta.len()
+    );
+
+    // Drop the DB and re-open with the same paths: the FST must now be
+    // loaded from the mmap'd file, not rebuilt in memory.  After `drop`
+    // the old mmap is unmapped, but the on-disk FST persists.
+    drop(db);
+    let db2 = DetectableDb::open_with_fst(&db_path, &fst_path).unwrap();
+    assert_eq!(db2.fst_len(), 3);
+    assert!(db2.match_process("/home/user/.steam/csgo", &[]).is_some());
+    // Opening must not have truncated the FST file.
+    let meta2 = std::fs::metadata(&fst_path).unwrap();
+    assert!(meta2.len() > 0, "FST file disappeared after open");
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(&fst_path);
+}
+
+#[tokio::test]
+#[cfg(not(miri))]
+async fn test_detectable_db_open_rebuilds_stale_fst_atomically() {
+    use dirpc::process::detectable::DetectableDb;
+
+    let db_path = temp_redb_path("stale_fst");
+    let fst_path = sibling_with_extension(&db_path, "fst");
+
+    // First build, then drop the DB so the FST file is fully written.
+    {
+        let _ = DetectableDb::rebuild_with_fst(&db_path, &fst_path, &sample_entries())
+            .await
+            .unwrap();
+    }
+    // Truncate the FST file to simulate a partial / crashed previous write.
+    // The on-disk redb is still authoritative; `open` must detect the
+    // mismatch and rebuild the FST from EXES.
+    std::fs::write(&fst_path, b"corrupt FST bytes").unwrap();
+
+    let db = DetectableDb::open_with_fst(&db_path, &fst_path).unwrap();
+    assert_eq!(db.fst_len(), 3);
+    assert!(db.match_process("/home/user/.steam/csgo", &[]).is_some());
+
+    // The recovered FST file is now a real FST and must be larger than the
+    // 18-byte stub we wrote.
+    let len = std::fs::metadata(&fst_path).unwrap().len();
+    assert!(len > 50, "FST was not rebuilt: only {len} bytes on disk");
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(&fst_path);
+}
+
+#[tokio::test]
+#[cfg(not(miri))]
+async fn test_detectable_db_open_with_missing_fst_succeeds() {
+    use dirpc::process::detectable::DetectableDb;
+
+    let db_path = temp_redb_path("missing_fst");
+    let fst_path = sibling_with_extension(&db_path, "fst");
+    let _ = std::fs::remove_file(&fst_path);
+
+    // First build, then drop so the redb is on disk.
+    {
+        let _ = DetectableDb::rebuild_with_fst(&db_path, &fst_path, &sample_entries())
+            .await
+            .unwrap();
+    }
+    // Delete the FST to simulate a fresh open with no FST cache.
+    let _ = std::fs::remove_file(&fst_path);
+
+    let db = DetectableDb::open_with_fst(&db_path, &fst_path).unwrap();
+    // EXES still has 3 entries, so the FST must be rebuilt and mmap'd.
+    assert_eq!(db.fst_len(), 3);
+    assert!(db.match_process("/home/user/.steam/csgo", &[]).is_some());
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(&fst_path);
+}
+
+/// Return `redb_path` with its file extension replaced by `ext`.  Falls
+/// back to appending `.<ext>` if the path has no extension.
+fn sibling_with_extension(redb_path: &std::path::Path, ext: &str) -> std::path::PathBuf {
+    match redb_path.extension() {
+        Some(_) => redb_path.with_extension(ext),
+        None => {
+            let mut s = redb_path.as_os_str().to_os_string();
+            s.push(format!(".{ext}"));
+            std::path::PathBuf::from(s)
+        }
+    }
+}

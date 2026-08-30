@@ -3,9 +3,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 use std::{collections::BTreeSet, fmt::Write as _};
 
-use ahash::{AHashMap, AHashSet};
+use ahash::AHashMap;
 use compact_str::CompactString;
 use fst::Set;
+use memmap2::Mmap;
 use redb::{Database, ReadTransaction, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
@@ -75,6 +76,14 @@ fn cache_dir() -> PathBuf {
 
 pub(crate) fn cache_db_path() -> PathBuf {
     cache_dir().join("detectable.redb")
+}
+
+/// Default path to the on-disk FST that indexes the ~700k detectable
+/// process strings.  Production callers should use the parameterised
+/// `DetectableDb::open_with_fst` / `rebuild_with_fst` so the FST lives next
+/// to the redb file under caller-controlled paths.
+pub(crate) fn cache_fst_path() -> PathBuf {
+    cache_dir().join("detectable.fst")
 }
 
 fn cache_etag_path() -> PathBuf {
@@ -299,24 +308,37 @@ pub(crate) async fn load_detectable_entries() -> Vec<DetectableEntry> {
 
 // ─── DetectableDb ────────────────────────────────────────────────────────────
 
-/// Disk-backed KV store (redb/mmap) with a two-level in-memory fast path.
+/// Disk-backed KV store (redb) with a two-level mmap'd fast path.
 ///
 /// ## Hot-path hierarchy
 ///
-/// 1. **FST** (`fst::Set`, O(|name|), pure memory) — membership pre-filter.
-///    Only exe names that appear in the FST proceed to the next level.
+/// 1. **FST** (`fst::Set` over a `memmap2::Mmap` of a caller-supplied `.fst`
+///    file, O(|name|)) — membership pre-filter.  The ~700k process strings
+///    are kept on disk and searched in place via the page cache; no per-process
+///    heap copy and no `SetBuilder` rebuild on startup.
 /// 2. **`exe_index`** (`papaya::HashMap`, O(1), pure memory) — maps each exe
 ///    name to the list of app IDs that declare that executable.  Eliminates the
 ///    intermediate `EXES_TABLE` redb lookup that was previously needed.
-/// 3. **redb apps table** (mmap-backed) — only reached when both (1) and (2)
-///    confirm a candidate.  Provides the rkyv-serialised entry for argument
-///    validation.
+/// 3. **redb `apps` table** — only reached when both (1) and (2) confirm a
+///    candidate.  Provides the rkyv-serialised entry for argument validation.
 ///
 /// **Miss path** (the common case in production): FST says "not known" → no
 /// allocation, no HashMap lookup, no disk I/O at all.
 pub struct DetectableDb {
     db: Database,
-    fst: Set<Vec<u8>>,
+    /// mmap-backed FST index.  The field is *always* populated: an empty FST
+    /// is a 36-byte file that parses as a `Set` with zero keys.  `contains`
+    /// borrows the FST bytes via the `Set`'s `Deref` and triggers page faults
+    /// lazily as pages are touched.
+    ///
+    /// Concurrency: the underlying file is treated as immutable for the
+    /// lifetime of this handle.  `rebuild` always replaces the file via
+    /// `rename(2)`, so any in-flight reader keeps observing the old inode
+    /// (a valid FST) until its mmap drops.  We do **not** hold a separate
+    /// `File` handle — the `Mmap` is independent of the `File` per
+    /// memmap2's contract.
+    fst: Set<Mmap>,
+    fst_path: PathBuf,
     /// In-memory exe_name → Vec<app_id>.
     ///
     /// Bypasses the `EXES_TABLE` redb round-trip in the hot scan path.
@@ -326,32 +348,68 @@ pub struct DetectableDb {
 }
 
 impl DetectableDb {
-    /// Open an existing redb database and rebuild the FST and exe_index from
-    /// its exe table.
+    /// Open an existing redb database and load the mmap'd FST at the default
+    /// cache location.
     pub fn open(db_path: &std::path::Path) -> anyhow::Result<Self> {
+        Self::open_with_fst(db_path, &cache_fst_path())
+    }
+
+    /// Open an existing redb database and load the mmap'd FST at `fst_path`.
+    ///
+    /// The FST file must be a valid FST written by `rebuild_with_fst`
+    /// (or any tool that produces a v3-format FST).  If the file is missing,
+    /// empty, or corrupt, an empty FST is materialised at `fst_path` and
+    /// used instead — except when the `EXES_TABLE` has rows: in that case
+    /// the FST is rebuilt from those rows and written back atomically.
+    pub fn open_with_fst(
+        db_path: &std::path::Path,
+        fst_path: &std::path::Path,
+    ) -> anyhow::Result<Self> {
         let db = Database::open(db_path)?;
         let mut this = Self {
             db,
-            fst: empty_fst(),
+            fst: empty_mmap_fst(),
+            fst_path: fst_path.to_path_buf(),
             exe_index: HashMap::default(),
         };
         this.load_fst_from_db()?;
         Ok(this)
     }
 
-    /// Delete any stale database file, create a fresh one, ingest entries, and
-    /// build the FST.  Async because it needs to create the cache directory.
+    /// Delete any stale database file, create a fresh one, ingest entries,
+    /// and (re)build the FST at the default cache location.
+    /// Async because it needs to create the cache directory.
     pub async fn rebuild(
         db_path: &std::path::Path,
         entries: &[DetectableEntry],
     ) -> anyhow::Result<Self> {
         let _ = tokio::fs::create_dir_all(cache_dir()).await;
+        Self::rebuild_with_fst(db_path, &cache_fst_path(), entries).await
+    }
+
+    /// Delete any stale redb file, create a fresh one, ingest entries, and
+    /// (re)build the FST atomically at `fst_path`.
+    ///
+    /// The FST file is *replaced* via `rename(2)` from a sibling temp file;
+    /// any concurrent `Mmap` of the previous FST continues to read the old
+    /// inode (which is a valid FST) until it drops.  We do **not** delete
+    /// the FST first: doing so would open a window during which a concurrent
+    /// `open` would see an empty FST and silently miss every match.
+    pub async fn rebuild_with_fst(
+        db_path: &std::path::Path,
+        fst_path: &std::path::Path,
+        entries: &[DetectableEntry],
+    ) -> anyhow::Result<Self> {
+        if let Some(parent) = db_path.parent() {
+            let _ = tokio::fs::create_dir_all(parent).await;
+        }
         let _ = tokio::fs::remove_file(db_path).await;
 
         let db = Database::create(db_path)?;
         let mut this = Self {
             db,
-            fst: empty_fst(),
+            fst: empty_mmap_fst(),
+            fst_path: fst_path.to_path_buf(),
             exe_index: HashMap::default(),
         };
         this.ingest_entries(entries)?;
@@ -371,7 +429,7 @@ impl DetectableDb {
     // ── internals ─────────────────────────────────────────────────────────────
 
     /// Write `entries` into both redb tables, populate the in-memory
-    /// `exe_index`, and rebuild the in-memory FST.
+    /// `exe_index`, and write the on-disk FST (then mmap it).
     fn ingest_entries(&mut self, entries: &[DetectableEntry]) -> anyhow::Result<()> {
         // Build exe_name → Vec<app_id> with a plain AHashMap (single-threaded).
         let mut exe_to_ids: AHashMap<CompactString, SmallVec<[CompactString; 4]>> =
@@ -415,28 +473,39 @@ impl DetectableDb {
             }
         }
 
-        // Build FST – keys must be inserted in sorted (lexicographic) order.
-        let mut sorted_names: Vec<CompactString> = exe_to_ids.keys().cloned().collect();
-        sorted_names.sort_unstable();
-
-        let mut builder = fst::SetBuilder::memory();
-        for name in sorted_names {
-            builder.insert(name.as_bytes())?;
-        }
-        self.fst = builder.into_set();
+        // Build FST on disk, then mmap it.  An empty FST is a valid 36-byte
+        // file; `SetBuilder` produces the exact bytes regardless of input.
+        let sorted_names: Vec<Vec<u8>> = {
+            let mut names: Vec<&[u8]> = exe_to_ids.keys().map(CompactString::as_bytes).collect();
+            names.sort_unstable();
+            names.into_iter().map(<[u8]>::to_vec).collect()
+        };
+        write_fst_file(&self.fst_path, &sorted_names)?;
+        self.fst = load_mmap_fst(&self.fst_path)?;
 
         Ok(())
     }
 
-    /// Reconstruct the in-memory FST and exe_index from the keys already stored
-    /// in the exe table (used when opening an existing database).
+    /// Reconstruct the in-memory exe_index and mmap the FST file.
+    ///
+    /// The FST file is the source of truth: if it exists and parses to a
+    /// `Set` whose length matches the number of distinct exe names in the
+    /// `EXES_TABLE`, we use it directly.  If the file is missing, empty,
+    /// corrupt, or has a mismatched length, we rebuild it from the EXES
+    /// rows and write the new FST atomically.  When the EXES table is
+    /// empty (fresh install, or this is a read-only `open`) we fall back
+    /// to an in-memory empty FST, which the field always represents
+    /// correctly.
     fn load_fst_from_db(&mut self) -> anyhow::Result<()> {
         let read_txn: ReadTransaction = self.db.begin_read()?;
 
         // The table might not exist in a freshly created (but empty) database.
         let exes: redb::ReadOnlyTable<&str, &str> = match read_txn.open_table(EXES_TABLE) {
             Ok(t) => t,
-            Err(_) => return Ok(()),
+            Err(_) => {
+                self.fst = ensure_fst_file(&self.fst_path)?;
+                return Ok(());
+            }
         };
 
         let mut names: Vec<CompactString> = Vec::new();
@@ -450,14 +519,30 @@ impl DetectableDb {
                 names.push(exe_name);
             }
         }
-        names.sort_unstable();
 
-        let mut builder = fst::SetBuilder::memory();
-        for name in &names {
-            builder.insert(name.as_bytes())?;
+        // If the on-disk FST agrees with EXES, mmap it directly.
+        if let Ok(fst) = load_mmap_fst(&self.fst_path)
+            && fst.len() == names.len()
+        {
+            self.fst = fst;
+            return Ok(());
         }
-        self.fst = builder.into_set();
 
+        // Otherwise rebuild from EXES (handles missing file, empty file,
+        // corrupt FST, or a length mismatch after a partial external edit).
+        // The cost is one `SetBuilder::memory()` + one file write; this
+        // path is taken at most once per (db_path, fst_path) pair.
+        if !names.is_empty() {
+            warn!(
+                "FST at {} is stale or unreadable; rebuilding from EXES table",
+                self.fst_path.display()
+            );
+            names.sort_unstable();
+            let sorted: Vec<Vec<u8>> = names.iter().map(|n| n.as_bytes().to_vec()).collect();
+            write_fst_file(&self.fst_path, &sorted)?;
+        }
+
+        self.fst = load_mmap_fst(&self.fst_path)?;
         Ok(())
     }
 
@@ -472,7 +557,7 @@ impl DetectableDb {
     ///    Miss path: returns `None` immediately with no allocation or disk I/O.
     /// 2. **`exe_index`** — O(1) `papaya::HashMap` lookup, pure memory.  
     ///    Yields the candidate app IDs without touching redb at all.
-    /// 3. **redb `apps` table** — mmap-backed, only reached for confirmed hits.  
+    /// 3. **redb `apps` table** — only reached for confirmed hits.  
     ///    Provides the rkyv-serialised entry for argument validation.
     pub fn match_process(
         &self,
@@ -501,8 +586,13 @@ impl DetectableDb {
 
         let read_txn: ReadTransaction = self.db.begin_read().ok()?;
         let apps: redb::ReadOnlyTable<&str, &[u8]> = read_txn.open_table(APPS_TABLE).ok()?;
-        let mut seen: AHashSet<CompactString> = AHashSet::default();
+        // Dedup buffer.  At most `variants.len() × max(ids per exe)` entries
+        // ever — variants ≤ 4, ids ≤ 4 — so a stack-allocated `SmallVec` of
+        // `&str` slices is both faster and zero-allocating versus a fresh
+        // `AHashSet::default()`.  Declared after `pin` so the borrowed slices
+        // are dropped first (Rust's reverse-declaration drop order).
         let pin = self.exe_index.pin();
+        let mut seen: SmallVec<[&str; 8]> = SmallVec::new();
 
         for exe_name in variants
             .iter()
@@ -515,16 +605,19 @@ impl DetectableDb {
 
             if let Some(ids) = pin.get(exe_name) {
                 for app_id in ids {
-                    if !seen.insert(app_id.clone()) {
+                    let id_str = app_id.as_str();
+                    if seen.contains(&id_str) {
                         continue;
                     }
+                    seen.push(id_str);
 
                     if let Ok(Some(guard)) = apps.get(app_id.as_str()) {
                         let bytes: &[u8] = guard.value();
 
                         // Copy into a 16-byte-aligned buffer so rkyv can access the
-                        // archive safely (redb mmap pages may not satisfy the archived
-                        // root's alignment requirement).
+                        // archive safely: redb returns an internal buffer that is
+                        // not guaranteed to satisfy the archived root's alignment
+                        // requirement on every code path.
                         let mut aligned = rkyv::util::AlignedVec::<RKYV_ALIGNMENT>::new();
                         aligned.extend_from_slice(bytes);
 
@@ -553,8 +646,148 @@ impl DetectableDb {
 /// potential future SIMD fields) without waste.
 const RKYV_ALIGNMENT: usize = 16;
 
-fn empty_fst() -> Set<Vec<u8>> {
-    fst::SetBuilder::memory().into_set()
+/// Build a fresh in-memory empty `Set<Mmap>` for the field's initial value.
+///
+/// `Mmap` is not `Clone`, so we cannot share a single instance; instead we
+/// reconstruct one from the canonical empty-FST v3 bytes (36 bytes).  This
+/// is constant-time — one tiny anonymous mmap and one `Set::new` parse —
+/// and only runs once per `open`/`rebuild`, never on the hot path.
+fn empty_mmap_fst() -> Set<Mmap> {
+    let bytes: Vec<u8> = fst::SetBuilder::memory()
+        .into_inner()
+        .expect("empty SetBuilder::memory into_inner");
+    debug_assert!(bytes.len() >= 36, "empty FST shorter than v3 header");
+    let mut mm = memmap2::MmapMut::map_anon(bytes.len()).expect("allocate empty FST backing");
+    mm[..bytes.len()].copy_from_slice(&bytes);
+    let mm = mm
+        .make_read_only()
+        .expect("freeze empty FST backing as read-only");
+    Set::new(mm).expect("parse empty FST backing")
+}
+
+/// Make sure `path` contains a parseable FST file.  If the file is missing
+/// or empty, write an empty FST (36 bytes) to it.  On a parse error we do
+/// *not* overwrite: the caller decides whether to rebuild from EXES.
+fn ensure_fst_file(path: &std::path::Path) -> anyhow::Result<Set<Mmap>> {
+    if let Ok(fst) = load_mmap_fst(path) {
+        return Ok(fst);
+    }
+    if path.exists() && path.metadata()?.len() > 0 {
+        // Non-empty but unparseable — leave it alone; the caller will
+        // rebuild from EXES and rename over it.
+        return Err(anyhow::anyhow!(
+            "FST at {} is not parseable",
+            path.display()
+        ));
+    }
+    write_fst_file(path, &[])?;
+    load_mmap_fst(path)
+}
+
+/// Serialise an FST containing exactly `keys` to `path`, atomically.
+///
+/// Writes to `<path>.<pid>.<nanos>.tmp` first, flushes the writer, then
+/// `rename(2)`s over `path`.  The rename is the only synchronisation point
+/// with other readers: any concurrent `Mmap` of the previous FST continues
+/// to read the old inode (which is a valid FST) until it drops.
+///
+/// **Durability note.** We do not `fsync(2)` the data file or its parent
+/// directory.  On a power loss between `flush` and `rename` the rename may
+/// not survive, leaving the on-disk FST empty or missing; the next `open`
+/// detects that and rebuilds from the redb `EXES_TABLE`.  This is
+/// acceptable for a cache: correctness is preserved at the cost of one
+/// slower startup.  Callers that need a durable FST can `sync_all()` the
+/// file before `rename`.
+fn write_fst_file(path: &std::path::Path, keys: &[Vec<u8>]) -> anyhow::Result<()> {
+    use std::fs::File;
+    use std::io::{BufWriter, Write as _};
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let tmp = unique_tmp_sibling(path);
+    {
+        let file = File::create(&tmp)?;
+        let mut writer = BufWriter::new(file);
+        {
+            let mut builder = fst::SetBuilder::new(&mut writer)
+                .map_err(|e| anyhow::anyhow!("fst SetBuilder::new: {e}"))?;
+            for k in keys {
+                builder
+                    .insert(k.as_slice())
+                    .map_err(|e| anyhow::anyhow!("fst insert: {e}"))?;
+            }
+            builder
+                .finish()
+                .map_err(|e| anyhow::anyhow!("fst finish: {e}"))?;
+        }
+        writer.flush()?;
+    }
+
+    // Atomic replace: either succeeds completely (old file is gone) or
+    // fails without modifying `path`.  Old inodes stay alive via any
+    // concurrent `Mmap`.
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+fn unique_tmp_sibling(path: &std::path::Path) -> PathBuf {
+    let pid = std::process::id();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let mut name = path
+        .file_name()
+        .map(|s| s.to_os_string())
+        .unwrap_or_default();
+    name.push(format!(".{pid}.{nanos}.tmp"));
+    path.with_file_name(name)
+}
+
+/// Memory-map the FST file at `path` and wrap it in a `Set<Mmap>`.
+///
+/// Returns `Err` for every expected failure: missing file, zero-byte file,
+/// or a file whose contents are not a parseable FST.  On success the
+/// kernel is asked to optimise for random access (`MADV_RANDOM`) — our
+/// hot path is a sequence of point lookups, so read-ahead would be pure
+/// waste.
+///
+/// # Safety justification
+///
+/// `MmapOptions::map` is `unsafe` because the kernel cannot, on its own,
+/// prevent a process that holds a writable file descriptor from mutating
+/// the bytes underneath a reader.  The contract is upheld here:
+///   1. The file is opened read-only via `File::open`; no writer fd exists
+///      in this process.
+///   2. `write_fst_file` always replaces the file via `rename(2)`, so any
+///      stale mmap keeps reading the old inode (a valid FST) until it
+///      drops.  Per memmap2's contract, the `Mmap` is independent of the
+///      `File` — closing the `File` after `map()` does not invalidate the
+///      mapping.
+fn load_mmap_fst(path: &std::path::Path) -> anyhow::Result<Set<Mmap>> {
+    use std::fs::File;
+
+    let file = File::open(path).map_err(|e| anyhow::anyhow!("open {}: {e}", path.display()))?;
+    let len = file
+        .metadata()
+        .map_err(|e| anyhow::anyhow!("stat {}: {e}", path.display()))?
+        .len();
+    if len == 0 {
+        return Err(anyhow::anyhow!("FST at {} is empty", path.display()));
+    }
+
+    // SAFETY: see function-level justification.
+    let mmap = unsafe { memmap2::MmapOptions::new().map(&file) }
+        .map_err(|e| anyhow::anyhow!("mmap {}: {e}", path.display()))?;
+
+    // Hot-path lookups are point queries with no temporal locality between
+    // them, so advise the kernel accordingly.  Ignore the result: the
+    // platform may not support this advice, and it is purely a hint.
+    let _ = mmap.advise(memmap2::Advice::Random);
+
+    Set::new(mmap).map_err(|e| anyhow::anyhow!("parse FST at {}: {e}", path.display()))
 }
 
 // ─── Helper: zero-copy match against an archived entry ───────────────────────

@@ -67,9 +67,10 @@ async fn get_process_list_with_system(
 ///
 /// ## Startup
 /// 1. Try to open an existing `redb` file; if it is populated, skip a network
-///    round-trip entirely (the mmap-backed database is already on disk).
+///    round-trip entirely.  The on-disk `detectable.fst` is mmap'd and used
+///    directly for the hot-path membership test.
 /// 2. Otherwise fetch the Discord detectable list, write it into redb, and
-///    build the in-memory FST.
+///    build the FST file (atomically) before mmap-ing it.
 ///
 /// ## Refresh
 /// Once per week the list is re-fetched.  A 304 Not-Modified response leaves
