@@ -673,7 +673,7 @@ fn ensure_fst_file(path: &std::path::Path) -> anyhow::Result<Set<Mmap>> {
         return Ok(fst);
     }
     if path.exists() && path.metadata()?.len() > 0 {
-        // Non-empty but unparseable — leave it alone; the caller will
+        // Non-empty but unparsable — leave it alone; the caller will
         // rebuild from EXES and rename over it.
         return Err(anyhow::anyhow!(
             "FST at {} is not parseable",

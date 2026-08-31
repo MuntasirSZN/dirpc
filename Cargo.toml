@@ -4,127 +4,97 @@ version = "0.1.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
 
-[[bench]]
-harness = false
-name = "benchmarks"
-
 [dependencies]
-ahash = "0.8"
-anyhow = { version = "1", features = ["backtrace"] }
+tokio = { version = "1.52", features = [
+  "rt",
+  "rt-multi-thread",
+  "macros",
+  "net",
+  "sync",
+  "time",
+  "fs",
+  "io-util",
+  "parking_lot",
+] }
+sockudo-ws = { version = "2.0", default-features = false, features = [
+  "simd",
+  "avx2",
+  "avx512",
+  "neon",
+  "tokio-runtime",
+  "permessage-deflate",
+  "rustls-platform-verifier",
+  "aws_lc_rs",
+  "fastrand",
+  "http2",
+  "http3",
+] }
 bytes = "1"
-clap = { version = "4", features = ["cargo", "derive", "env", "wrap_help"] }
-clap-verbosity-flag = {
-  version = "3",
-  default-features = false,
-  features = [
-    "tracing",
-  ]
-}
-compact_str = { version = "0.10", features = ["rkyv", "serde", "smallvec"] }
-fst = "0.4"
-jiff = "0.2"
-memmap2 = "0.9"
-papaya = "0.2"
-redb = "4"
-reqwest = {
-  version = "0.13",
-  features = [
-    "hickory-dns",
-    "json",
-    "rustls",
-    "socks",
-  ]
-}
-rkyv = { version = "0.8", features = ["smallvec-1"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = { package = "jzon-rs-compat", version = "0.3", features = ["fast-float", "simd"] }
-simdutf8 = "0.1"
-smallvec = {
-  version = "1",
-  features = [
-    "const_generics",
-    "serde",
-    "union",
-  ]
-}
-sockudo-ws = {
-  version = "2.0",
-  default-features = false,
-  features = [
-    "avx2",
-    "avx512",
-    "aws_lc_rs",
-    "fastrand",
-    "http2",
-    "http3",
-    "neon",
-    "permessage-deflate",
-    "rustls-platform-verifier",
-    "simd",
-    "tokio-runtime",
-  ]
-}
+jiff = "0.2"
 sysinfo = "0.39"
-tokio = {
-  version = "1.52",
-  features = [
-    "fs",
-    "io-util",
-    "macros",
-    "net",
-    "parking_lot",
-    "rt",
-    "rt-multi-thread",
-    "sync",
-    "time",
-  ]
-}
+reqwest = { version = "0.13", features = [
+  "rustls",
+  "socks",
+  "json",
+  "hickory-dns",
+] }
+clap = { version = "4", features = ["derive", "env", "cargo", "wrap_help"] }
+clap-verbosity-flag = { version = "3", default-features = false, features = [
+  "tracing",
+] }
 tracing = "0.1"
-tracing-subscriber = {
-  version = "0.3",
-  features = [
-    "env-filter",
-    "fmt",
-    "parking_lot",
-  ]
-}
-
-[dev-dependencies]
-divan = { package = "codspeed-divan-compat", version = "5" }
-tokio-test = "0.4"
+tracing-subscriber = { version = "0.3", features = [
+  "env-filter",
+  "fmt",
+  "parking_lot",
+] }
+anyhow = { version = "1", features = ["backtrace"] }
+serde_json = { package = "jzon-rs-compat", version = "0.3", features = ["simd", "fast-float"] }
+redb = "4"
+fst = "0.4"
+rkyv = { version = "0.8", features = ["smallvec-1"] }
+papaya = "0.2"
+ahash = "0.8"
+smallvec = { version = "1", features = [
+  "serde",
+  "union",
+  "const_generics",
+] }
+compact_str = { version = "0.10", features = ["serde", "rkyv", "smallvec"] }
+simdutf8 = "0.1"
+memmap2 = "0.9.11"
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
-mimalloc-safe = {
-  version = "0.1",
-  default-features = false,
-  features = [
-    "extended",
-  ]
-}
+mimalloc-safe = { version = "0.1", default-features = false, features = [
+  "extended",
+] }
+
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
-mimalloc-safe = {
-  version = "0.1",
-  default-features = false,
-  features = [
-    "extended",
-    "no_opt_arch",
-  ]
-}
+mimalloc-safe = { version = "0.1", default-features = false, features = [
+  "extended",
+  "no_opt_arch",
+] }
 
-[target.'cfg(target_endian = "big")'.dependencies]
-rkyv = { version = "0.8", features = ["big_endian"] }
+[target.'cfg(target_env = "msvc")'.dependencies]
+mimalloc-safe = { version = "0.1", default-features = false, features = [
+  "extended",
+  "no_opt_arch",
+  "override",
+] }
 
 [target.'cfg(target_endian = "little")'.dependencies]
 rkyv = { version = "0.8", features = ["little_endian"] }
 
-[target.'cfg(target_env = "msvc")'.dependencies]
-mimalloc-safe = {
-  version = "0.1",
-  default-features = false,
-  features = [
-    "extended",
-    "no_opt_arch",
-    "override",
-  ]
-}
+[target.'cfg(target_endian = "big")'.dependencies]
+rkyv = { version = "0.8", features = ["big_endian"] }
+
+[dev-dependencies]
+tokio-test = "0.4"
+divan = { version = "5", package = "codspeed-divan-compat" }
+
+[[bench]]
+name = "benchmarks"
+harness = false
+
